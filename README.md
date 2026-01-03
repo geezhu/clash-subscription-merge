@@ -29,6 +29,7 @@ python merge.py
 4.选择模式：
    - 模式 A：保留原始 group/rules
    - 模式 B：统一 ACL4SSR
+
 5.输入：
    - ns（订阅命名空间）、端口、订阅链接（或 local）、对应 snippet.yaml 路径
 
