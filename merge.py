@@ -130,14 +130,14 @@ def ensure_all_acl_groups(
     cfg: dict,
     *,
     all_default_group: str = "ALL/默认",
-    all_direct_group: str = "ALL/🎯 全球直连",
-    all_reject_group: str = "ALL/🛑 全球拦截",
+    all_direct_group: str = "ALL/直连",
+    all_reject_group: str = "ALL/拦截",
 ) -> tuple[str, str, str]:
     """
     Ensure ALL-level ACL groups:
       - ALL/默认 must exist
-      - ALL/🎯 全球直连: select [DIRECT, ALL/默认]
-      - ALL/🛑 全球拦截: select [REJECT, DIRECT]
+      - ALL/直连: select [DIRECT, ALL/默认]
+      - ALL/拦截: select [REJECT, DIRECT]
 
     No auto-renaming: if group exists, update it.
     """
@@ -209,14 +209,14 @@ def ensure_ns_acl_groups(
     cfg: dict,
     ns: str,
     default_group_name: str,  # usually f"{ns}/默认"
-    direct_suffix: str = "🎯 全球直连",
-    reject_suffix: str = "🛑 全球拦截",
+    direct_suffix: str = "直连",
+    reject_suffix: str = "拦截",
 ) -> tuple[str, str, str]:
     """
     Ensure per-namespace ACL groups (namespaced by subscription prefix):
       - <ns>/默认          (already ensured elsewhere)
-      - <ns>/🎯 全球直连   select [DIRECT, <ns>/默认]
-      - <ns>/🛑 全球拦截   select [REJECT, DIRECT]
+      - <ns>/直连   select [DIRECT, <ns>/默认]
+      - <ns>/拦截   select [REJECT, DIRECT]
     """
     groups = cfg.setdefault("proxy-groups", [])
     if not isinstance(groups, list):
@@ -288,8 +288,8 @@ def ensure_default_port_three_groups(
     cfg: dict,
     *,
     default_group: str = "ALL/默认",
-    direct_group: str = "🎯 全球直连",
-    reject_group: str = "🛑 全球拦截",
+    direct_group: str = "直连",
+    reject_group: str = "拦截",
 ) -> tuple[str, str, str]:
     """
     Ensure 3 groups exist for ACL4SSR rules (GLOBAL, shared by all ports):
@@ -404,8 +404,8 @@ def apply_acl4ssr(
     cfg: dict,
     *,
     all_proxy_group_name: str = "ALL/默认",
-    direct_group_name: str = "🎯 全球直连",
-    reject_group_name: str = "🛑 全球拦截",
+    direct_group_name: str = "直连",
+    reject_group_name: str = "拦截",
     sub_rule_name: str | None = None,
     set_global_rules: bool = True,
 ) -> tuple[str, str, str]:
@@ -456,8 +456,8 @@ def apply_acl4ssr_for_ns(
     ns: str,
     default_group_name: str,
     sub_rule_name: str,
-    direct_suffix: str = "🎯 全球直连",
-    reject_suffix: str = "🛑 全球拦截",
+    direct_suffix: str = "直连",
+    reject_suffix: str = "拦截",
 ) -> None:
     """
     Ensure providers + per-ns groups, then write cfg["sub-rules"][sub_rule_name] for this ns.
@@ -1060,8 +1060,8 @@ def build_config(
     all_default, all_direct, all_reject = ensure_all_acl_groups(
         merged,
         all_default_group=all_group_name,
-        all_direct_group="ALL/🎯 全球直连",
-        all_reject_group="ALL/🛑 全球拦截",
+        all_direct_group="ALL/直连",
+        all_reject_group="ALL/拦截",
     )
 
     # ✅ 7) 默认端口（全局 rules）用 ACL4SSR（指向 ALL 级三组）
