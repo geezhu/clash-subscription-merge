@@ -15,8 +15,7 @@ Core behavior:
 - Merge proxy-groups from snippets with namespace prefix "<ns>/"
 - Leaf groups (no references to other groups) rewrite nodes list into use:[ns] + filter exact match
 - Non-leaf groups remove all node names; keep only BUILTIN (DIRECT/REJECT/PASS/...) + group references
-  and auto-fill with "<ns>/默认" if nothing meaningful remains
-- Create per-source default group "<ns>/默认" using use:[ns]
+  and auto-fill with DIRECT if nothing meaningful remains
 - Put snippet rules into sub-rules.rules_<ns> and bind listener.rule to that sub-rule set
 - Namespace rule-providers keys as "<ns>__<name>" and rewrite RULE-SET references accordingly
 - Rewrite rule policy field (last or second-last if "no-resolve") if it matches group/proxy names
@@ -1146,7 +1145,6 @@ def rewrite_group(
     maps: Maps,
     has_provider: bool,
     raw_names: Set[str],
-    default_group_name: str
 ) -> Dict[str, Any]:
     """
     - Rename group name -> ns/group
@@ -1236,7 +1234,7 @@ def rewrite_group(
         # leaf: keep exclude-filter if user provided (rare)
         return g2
 
-    # non-leaf: keep only BUILTIN + group refs, and add default group if we dropped any nodes
+    # non-leaf: keep only BUILTIN + group refs, and add use if we dropped any nodes
     kept2: List[str] = []
     dropped_any_node = False
 
@@ -1265,7 +1263,7 @@ def rewrite_group(
         if dropped_any_node:
             g2.pop("proxies", None)
         else:
-            g2["proxies"] = [default_group_name]
+            g2["proxies"] = ["DIRECT"]
     g2.pop("filter", None)
     g2.pop("exclude-filter", None)
 
@@ -1533,7 +1531,7 @@ def build_config(
             }
             remote_ns_list.append(src.ns)
 
-        # 2) import local proxies (for local ns/默认)
+        # 2) import local proxies
         local_names: list[str] = []
         if is_local and isinstance(snippet.get("proxies"), list):
             for p in snippet["proxies"]:
@@ -1545,15 +1543,7 @@ def build_config(
                     local_names.append(new_name)
             local_proxy_names_all.extend(local_names)
 
-        # 3) ensure per-ns default group (remote uses use, local uses proxies)
-        ns_default = ensure_ns_default_group(
-            merged,
-            ns=src.ns,
-            is_local=is_local,
-            local_proxy_names=local_names,
-            add_direct_for_local=True,
-        )
-        # 4) listener.rule
+        # 3) listener.rule
         if keep_original_groups_rules:
             # merge groups/rules from snippet
             groups = snippet.get("proxy-groups") or []
@@ -1569,7 +1559,6 @@ def build_config(
                             maps=maps,
                             has_provider=has_provider,
                             raw_names=raw_names,
-                            default_group_name=ns_default,  # 非叶子补默认组用 ns/默认
                         )
                     )
 
@@ -1585,7 +1574,7 @@ def build_config(
                 )
             rewritten_rules = [rewrite_rule_line(str(r), maps) for r in rules]
             if not any(str(r).strip().startswith("MATCH,") for r in rewritten_rules):
-                rewritten_rules.append(f"MATCH,{ns_default}" if has_provider else "MATCH,DIRECT")
+                rewritten_rules.append("MATCH,DIRECT")
             merged["sub-rules"][rules_key] = rewritten_rules
 
             listener_rule = rules_key
