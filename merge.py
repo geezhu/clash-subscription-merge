@@ -28,6 +28,7 @@ Dependencies:
 from __future__ import annotations
 
 import argparse
+import copy
 import re
 import sys
 from dataclasses import dataclass
@@ -54,6 +55,61 @@ ACL4SSR_RULESETS = {
     "ProxyLite": "Clash/ProxyLite.list",
     "ChinaDomain": "Clash/ChinaDomain.list",
     "ChinaCompanyIp": "Clash/ChinaCompanyIp.list",
+}
+
+# Default base config used when --base is not provided.
+DEFAULT_BASE_CONFIG: Dict[str, Any] = {
+    "mode": "rule",
+    "log-level": "info",
+    "ipv6": False,
+    "external-controller": "0.0.0.0:9090",
+    "dns": {
+        "enable": True,
+        "listen": "0.0.0.0:53",
+        "ipv6": False,
+        "default-nameserver": [
+            "223.5.5.5",
+            "114.114.114.114",
+        ],
+        "nameserver": [
+            "223.5.5.5",
+            "114.114.114.114",
+            "119.29.29.29",
+            "180.76.76.76",
+        ],
+        "enhanced-mode": "fake-ip",
+        "fake-ip-range": "198.18.0.1/16",
+        "fake-ip-filter": [
+            "*.lan",
+            "*.localdomain",
+            "*.example",
+            "*.invalid",
+            "*.localhost",
+            "*.test",
+            "*.local",
+            "*.home.arpa",
+            "router.asus.com",
+            "localhost.sec.qq.com",
+            "localhost.ptlogin2.qq.com",
+            "+.msftconnecttest.com",
+        ],
+    },
+    "tun": {
+        "enable": True,
+        "stack": "system",
+        "auto-route": True,
+        "auto-detect-interface": True,
+        "dns-hijack": [
+            "114.114.114.114",
+            "180.76.76.76",
+            "119.29.29.29",
+            "223.5.5.5",
+            "8.8.8.8",
+            "8.8.4.4",
+            "1.1.1.1",
+            "1.0.0.1",
+        ],
+    },
 }
 
 
@@ -1079,12 +1135,12 @@ def build_config(
 def main() -> None:
     import argparse
     ap = argparse.ArgumentParser(description="合并多订阅片段 -> mihomo config")
-    ap.add_argument("--base", help="可选：基础配置 base.yaml（dns/tun 等通用设置）")
+    ap.add_argument("--base", help="可选：基础配置 base.yaml（dns/tun 等通用设置；未提供时使用内置默认）")
     ap.add_argument("--out", default="merged.yaml", help="输出文件路径")
     ap.add_argument("--listen", default="127.0.0.1", help="listeners 监听地址（默认 127.0.0.1）")
     args = ap.parse_args()
 
-    base = load_yaml_file(args.base) if args.base else None
+    base = load_yaml_file(args.base) if args.base else copy.deepcopy(DEFAULT_BASE_CONFIG)
     keep_original = prompt_yes_no("是否保留原有订阅的 proxy-groups/rules（每个端口独立 sub-rules）？否则使用ACL4SSR简化", default=True)
     sources = prompt_sources()
 
