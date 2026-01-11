@@ -2,7 +2,7 @@
 # 准备订阅片段 YAML & v2ray 链接导入流程
 
 ← [返回 README](../README.md)  
-← 上一篇：[模式 B：统一 ACL4SSR](03-mode-b-acl4ssr.md)  
+← 上一篇：[模式 B：内置模板分组/规则](03-mode-b-acl4ssr.md)  
 → 下一篇：[常见问题与排错](05-troubleshooting.md)
 
 ---
@@ -16,7 +16,7 @@
 - 你在 Verge 里已经能完成订阅拉取与转换
 - 对脚本来说，最重要的是拿到一份“可解析的 YAML”，用于：
   - 模式 A：保留 group/rules 时做命名空间重写、叶/非叶判断、use 化
-  - 模式 B：local 节点导入（proxies）
+  - 模式 B：统一模板分组/规则（只需要节点与 provider）
 
 推荐工作流：
 - 先在 Clash Verge Rev 添加订阅
