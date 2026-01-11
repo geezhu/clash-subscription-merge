@@ -43,6 +43,8 @@ yaml.allow_unicode = True
 
 BUILTINS: Set[str] = {"DIRECT", "REJECT", "PASS", "GLOBAL", "DNS"}
 PROVIDER_PLACEHOLDERS: Set[str] = {"PROVIDER", "__PROVIDER__", "{PROVIDER}", "{provider}", "${PROVIDER}"}
+LEAF_PLACEHOLDER = "LEAF"
+LEAF_PLACEHOLDERS: Set[str] = {LEAF_PLACEHOLDER}
 
 # Default base config used when --base is not provided.
 DEFAULT_BASE_CONFIG: Dict[str, Any] = {
@@ -107,24 +109,14 @@ TEMPLATE_GROUPS: List[Dict[str, Any]] = [
         "proxies": [
             "♻️ 自动选择",
             "DIRECT",
-            "ntt-VLESS_WS",
-            "ntt-VLESS_Reality_Vision",
-            "ntt-singbox_tuic",
-            "gtt-VLESS_WS",
-            "gtt-VLESS_Reality_Vision",
-            "gtt-singbox_tuic",
+            "LEAF",
         ],
     },
     {
         "name": "♻️ 自动选择",
         "type": "url-test",
         "proxies": [
-            "ntt-VLESS_WS",
-            "ntt-VLESS_Reality_Vision",
-            "ntt-singbox_tuic",
-            "gtt-VLESS_WS",
-            "gtt-VLESS_Reality_Vision",
-            "gtt-singbox_tuic",
+            "LEAF",
         ],
         "url": "http://www.gstatic.com/generate_204",
         "interval": 300,
@@ -137,12 +129,7 @@ TEMPLATE_GROUPS: List[Dict[str, Any]] = [
             "🚀 节点选择",
             "♻️ 自动选择",
             "🎯 全球直连",
-            "ntt-VLESS_WS",
-            "ntt-VLESS_Reality_Vision",
-            "ntt-singbox_tuic",
-            "gtt-VLESS_WS",
-            "gtt-VLESS_Reality_Vision",
-            "gtt-singbox_tuic",
+            "LEAF",
         ],
     },
     {
@@ -151,12 +138,7 @@ TEMPLATE_GROUPS: List[Dict[str, Any]] = [
         "proxies": [
             "🚀 节点选择",
             "🎯 全球直连",
-            "ntt-VLESS_WS",
-            "ntt-VLESS_Reality_Vision",
-            "ntt-singbox_tuic",
-            "gtt-VLESS_WS",
-            "gtt-VLESS_Reality_Vision",
-            "gtt-singbox_tuic",
+            "LEAF",
         ],
     },
     {
@@ -165,12 +147,7 @@ TEMPLATE_GROUPS: List[Dict[str, Any]] = [
         "proxies": [
             "🎯 全球直连",
             "🚀 节点选择",
-            "ntt-VLESS_WS",
-            "ntt-VLESS_Reality_Vision",
-            "ntt-singbox_tuic",
-            "gtt-VLESS_WS",
-            "gtt-VLESS_Reality_Vision",
-            "gtt-singbox_tuic",
+            "LEAF",
         ],
     },
     {
@@ -179,12 +156,7 @@ TEMPLATE_GROUPS: List[Dict[str, Any]] = [
         "proxies": [
             "🚀 节点选择",
             "🎯 全球直连",
-            "ntt-VLESS_WS",
-            "ntt-VLESS_Reality_Vision",
-            "ntt-singbox_tuic",
-            "gtt-VLESS_WS",
-            "gtt-VLESS_Reality_Vision",
-            "gtt-singbox_tuic",
+            "LEAF",
         ],
     },
     {
@@ -219,12 +191,7 @@ TEMPLATE_GROUPS: List[Dict[str, Any]] = [
             "🚀 节点选择",
             "🎯 全球直连",
             "♻️ 自动选择",
-            "ntt-VLESS_WS",
-            "ntt-VLESS_Reality_Vision",
-            "ntt-singbox_tuic",
-            "gtt-VLESS_WS",
-            "gtt-VLESS_Reality_Vision",
-            "gtt-singbox_tuic",
+            "LEAF",
         ],
     },
 ]
@@ -403,6 +370,9 @@ def _analyze_group_proxies(
     needs_leaf = False
     for item in proxies:
         if not isinstance(item, str):
+            continue
+        if item in LEAF_PLACEHOLDERS:
+            needs_leaf = True
             continue
         if item in BUILTINS:
             builtins.append(item)
