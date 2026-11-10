@@ -1,5 +1,7 @@
 <!-- README.md -->
-# 多订阅多端口配置生成器（Clash Verge Rev + mihomo）
+# Clash 多端口订阅分流
+
+> 把多个订阅、自建节点和分享链接合成一份 mihomo 配置，每个端口走各自的订阅和规则。支持 Clash Verge Rev。
 
 一个 mihomo 实例同时开多个本地端口，每个端口绑定自己的订阅、分组和规则。
 支持订阅链接、自己写的节点 YAML，以及直接粘贴 `vless://`、`vmess://` 等分享链接。
