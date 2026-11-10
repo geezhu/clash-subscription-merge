@@ -27,12 +27,12 @@ groups:
   - name: 🛑 广告拦截
     type: select
     scope: shared
-    proxies: [REJECT, DIRECT]
+    proxies: [REJECT, DIRECT, 🚀 节点选择]   # 🚀 节点选择 会展开为每个入口各自的节点选择
 
   - name: 🔍 Google
     type: select
     scope: shared
-    proxies: [🚀 节点选择, DIRECT, LEAF]   # 🚀 节点选择 会展开为每个入口各自的节点选择
+    proxies: [DIRECT, LEAF]
 
   - name: 🤖 AI服务
     type: select
