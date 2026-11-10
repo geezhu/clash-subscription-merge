@@ -1,63 +1,63 @@
 <!-- docs/04-snippets-and-import.md -->
-# 准备订阅片段 YAML & v2ray 链接导入流程
+# sources.yaml 与订阅片段
 
 ← [返回 README](../README.md)  
-← 上一篇：[模式 B：内置模板分组/规则](03-mode-b-acl4ssr.md)  
+← 上一篇：[template 模式](03-template.md)  
 → 下一篇：[常见问题与排错](05-troubleshooting.md)
 
 ---
 
-## 1) 为什么脚本不会直接下载订阅 YAML
+## 1) sources.yaml
 
-当前脚本不会“根据订阅链接自动下载并解析为 yaml”，需要你先准备 snippet 文件。
+分成「来源」和「入口」两部分，一个来源可以被多个入口引用：
 
-原因（实用角度）：
-- 订阅链接可能返回多种格式（Base64、Clash YAML、混合格式）
-- 你在 Verge 里已经能完成订阅拉取与转换
-- 对脚本来说，最重要的是拿到一份“可解析的 YAML”，用于：
-  - 模式 A：保留 group/rules 时做命名空间重写、叶/非叶判断、use 化
-  - 模式 B：统一模板分组/规则（只需要节点与 provider）
+```yaml
+sources:
+  - ns: sub1
+    url: https://example.com/sub?token=xxx   # 远程订阅
+  - ns: myvps
+    url: local                               # 本地节点
+    snippet: snippets/myvps.yaml             # local 时必填，含 proxies
 
-推荐工作流：
-- 先在 Clash Verge Rev 添加订阅
-- 从“编辑文件”复制出 YAML，保存成 `snippets/<ns>.yaml`
-- 脚本读取这份文件做合并/生成
+entries:
+  - name: main
+    port: 7897
+    sources: [sub1]
+    profile: template
+  - name: mix
+    port: 7898
+    sources: [sub1, myvps]   # 远程进 use，本地进 proxies，同一个组
+    profile: template
+  - name: ALL
+    port: 7899
+    sources: [sub1, myvps]
+    profile: template
+    default: true            # 它的规则同时作为全局 rules，DoH 也走它的组
+```
 
----
+没有这个文件时，脚本会交互询问并生成；有的话会询问是否复用。**文件里有订阅 token，已在 `.gitignore` 中，不要提交。**
 
-## 2) 远程订阅（url 非 local）如何准备 snippet
+## 2) 什么时候需要订阅片段（snippet）
 
-1. Clash Verge Rev → 订阅 → 新建订阅（远程链接）
-2. 订阅更新成功后，右键订阅 → 编辑文件
-3. 全选复制保存到本地：`snippets/<ns>.yaml`
+| 场景 | 是否需要 |
+|---|---|
+| 远程订阅 + template | 不需要，节点由 mihomo 的 proxy-providers 自己拉取 |
+| 远程订阅 + preserve | 需要，要读取订阅自带的分组和规则 |
+| 本地节点（`local`） | 需要，含 `proxies:` |
 
-> 这份 snippet 对模式 A 很关键，因为其中包含订阅自带的 proxy-groups/rules，脚本才能进行“叶/非叶”改写。
+## 3) 自动下载
 
----
+preserve 模式下，远程订阅的片段会自动下载到 `snippets/<ns>.yaml`（User-Agent 为 `clash.meta`）：
 
-## 3) v2ray/vmess/vless/hysteria 链接导入到 Clash（local 订阅）
+- 只支持 **Clash YAML**。Base64 / v2ray 链接列表会报错。
+- 已有缓存时不重复下载，`--refresh` 强制更新；下载失败会回退到缓存并给出警告。
+- 如果订阅商不返回 Clash 格式，可在 Clash Verge Rev 添加订阅后，「编辑文件」复制出来存成 `snippets/<ns>.yaml`。
 
-当你只有节点链接、没有现成 Clash YAML，可以按以下流程：
+## 4) 本地节点片段示例
 
-### 3.1 获取默认模板
-用 https://v2rayse.com/node-convert 生成/获取一个 Clash 默认模板（作为骨架）。
+```yaml
+proxies:
+  - {name: hk, type: ss, server: 1.2.3.4, port: 8388, cipher: aes-128-gcm, password: xxx}
+```
 
-### 3.2 在 Clash Verge Rev 创建 local 订阅
-Clash Verge Rev → 订阅 → 新建 → 类型 local → 输入名称 → 编辑文件  
-把模板粘贴进去 → 保存。
-
-### 3.3 追加节点
-右键该 local 订阅 → 编辑节点 → 粘贴节点链接 → 添加后置代理节点  
-进入 高级 → 拷贝 append 输出的节点片段  
-回到“编辑文件”，把 append 内容合并进 `proxies:` 列表。
-
-注意事项（非常重要）：
-- 你新增/替换 `proxies` 后，要同步检查 `proxy-groups` 里引用的节点名是否存在
-- 若 group 引用了旧节点名，需要更新 group 的 proxies 列表（或改为更通用的结构）
-
-完成后，把该 local 订阅的“编辑文件”内容保存成 `snippets/<ns>.yaml`，脚本即可读取。
-
----
-
-下一篇：
-→ [常见问题与排错](05-troubleshooting.md)
+输出时节点名会加上来源前缀，变成 `myvps/hk`。

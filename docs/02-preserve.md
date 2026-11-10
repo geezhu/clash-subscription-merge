@@ -1,21 +1,30 @@
-<!-- docs/02-mode-a-preserve.md -->
-# 模式 A：保留订阅原始 group/rules（原理与实现细节）
+<!-- docs/02-preserve.md -->
+# preserve 模式：保留订阅原始 group/rules（原理与实现细节）
 
 ← [返回 README](../README.md)  
-→ 下一篇：[模式 B：内置模板分组/规则](03-mode-b-acl4ssr.md)
+→ 下一篇：[template 模式：统一模板分组/规则](03-template.md)
 
-> 模式 A 适合：订阅自带 proxy-groups 很复杂（地区组/媒体组/Telegram 组/自动测速组等），你希望尽量保留原结构，只做必要的“命名空间化”和“provider 化改写”。
+> preserve 模式适合：订阅自带 proxy-groups 很复杂（地区组/媒体组/Telegram 组/自动测速组等），你希望尽量保留原结构，只做必要的“命名空间化”和“provider 化改写”。
 
 ---
 
-## 1) 模式 A 做了什么（概览）
+## 1) preserve 模式做了什么（概览）
 
-对每个订阅（命名空间为 `ns`）：
+对每个 preserve 入口（入口名 `entry`，引用的订阅命名空间 `ns`）：
 
-1. 远程订阅：生成 `proxy-providers.ns`
-2. 给订阅中的所有 group / proxy 名做命名空间：`ns/<原名>`
+1. 远程订阅：生成 `proxy-providers.ns`，节点名自动加前缀 `ns/`
+2. 订阅里的 group 改名为 `entry/<原名>`；本地节点改名为 `ns/<原名>`
 3. 对订阅自带的 `proxy-groups` 做“叶子/非叶子”重写（下面详解）
-4. 订阅自带 `rules` 进入 `sub-rules.rules_<ns>`，并让该端口 listener 绑定 `rule: rules_<ns>`
+4. 订阅自带的 `rule-providers` 改名为 `entry__<原名>`，`path` 同步改为 `./rules/entry__<原名>.yaml`，避免多个入口互相覆盖文件
+5. 订阅自带 `rules` 进入 `sub-rules.rules_<entry>`，并让该端口 listener 绑定 `rule: rules_<entry>`；规则里的策略字段（`no-resolve` 前一位）会被改写，没有 `MATCH` 时自动补 `MATCH,DIRECT`
+
+> 前缀规则：**组名用入口名，节点名用来源名 `ns`**。交互生成配置时入口名与来源名相同，所以多数情况下看起来一样。
+
+### 使用条件与限制
+- 一个 preserve 入口只能引用**一个**来源（多个来源的分组树无法合并）
+- 远程订阅必须能拿到 **Clash YAML** 片段（见 [sources.yaml 与订阅片段](04-snippets-and-import.md)）
+- 规则改写只处理最后的策略字段；`AND/OR/NOT` 嵌套里的策略、`SUB-RULE` 引用**不会**被改写，校验阶段会警告“策略不存在”
+- 非叶子组里无法判定的条目（例如拼错的组名）会被当作节点丢弃，脚本会打印 `[提示]`
 
 ---
 
@@ -50,7 +59,7 @@
 **因此：远程订阅的叶子组会被“provider 化”：**
 - 删除组内显式列出的节点名（避免写死）
 - 改成 `use: [ns]`（让节点来自 provider）
--（可选）通过 `filter / exclude-filter` 控制筛选规则
+- 同时写入 `filter`：把原来列出的节点名做精确匹配（`^(?:节点1|节点2)$`），保证只取这个组原本包含的节点
 
 > local 订阅无法 use provider，因此 local 的叶子组一般保持 `proxies:`（或者你另行实现 local 的 filter 机制）。
 
@@ -65,7 +74,7 @@
 
 ---
 
-## 4) 非叶子节点删除原理（你提到的核心点）
+## 4) 非叶子节点删除原理
 
 ### 4.1 为什么要“删除非叶子组里枚举的节点”
 非叶子组里往往混了两类条目：
@@ -101,9 +110,9 @@
 
 ---
 
-## 5) 模式 A 的最终效果（你会在 UI 看到什么）
+## 5) preserve 模式的最终效果（你会在 UI 看到什么）
 
-- 原订阅的 group 树结构仍在（但已改名为 `ns/...`）
+- 原订阅的 group 树结构仍在（但已改名为 `入口名/...`）
 - 顶层组不会再塞满“过时的节点枚举”
 - 非叶子组不会再塞满“过时的节点枚举”，必要时会出现 `use: [ns]`
 
@@ -122,4 +131,4 @@
 ---
 
 下一篇：
-→ [模式 B：内置模板分组/规则（订阅前缀 ns/…）](03-mode-b-acl4ssr.md)
+→ [template 模式：统一模板分组/规则](03-template.md)

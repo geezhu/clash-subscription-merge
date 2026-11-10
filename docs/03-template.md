@@ -1,50 +1,77 @@
-<!-- docs/03-mode-b-acl4ssr.md -->
-# 模式 B：内置模板分组/规则（订阅前缀 ns/…）
+<!-- docs/03-template.md -->
+# template 模式：统一模板分组/规则
 
 ← [返回 README](../README.md)  
-← 上一篇：[模式 A：保留订阅原始结构](02-mode-a-preserve.md)  
-→ 下一篇：[准备订阅片段 YAML & 导入流程](04-snippets-and-import.md)
+← 上一篇：[preserve 模式](02-preserve.md)  
+→ 下一篇：[sources.yaml 与订阅片段](04-snippets-and-import.md)
 
-> 模式 B 适合：你不想保留订阅自带的复杂 group/rules，所有端口统一使用内置模板分组/规则（规则列表来源于 ACL4SSR）。
-
----
-
-## 1) 模式 B 的核心目标
-
-- 不读取/合并订阅片段里的 `proxy-groups` 与 `rules`（只导入节点与 provider）
-- 每个订阅端口使用自己的 `sub-rules: template_<ns>`
-- 模板分组/规则内置在脚本中（不依赖 `template.yaml`）
+> 适合：不保留订阅自带的复杂 group/rules，所有端口统一使用 `config/` 里的模板（规则集来源于 ACL4SSR）。
 
 ---
 
-## 2) 模板分组如何注入节点
+## 1) 模板放在哪里
 
-- 模板组的 `proxies` 列表里用 `LEAF` 表示“该组需要节点”
-- **远程订阅**：为该组加入 `use: [ns]`
-- **本地订阅**：把本地 `proxies` 填入该组
-- 未标记 `LEAF` 的组只保留 builtin 与组引用
+| 文件 | 内容 |
+|---|---|
+| `config/rulesets.yaml` | 规则集，只写名字和 URL；`type/behavior/format/path` 由 `defaults` 补全 |
+| `config/groups.yaml` | 模板分组：7 个（节点选择、自动选择、全球直连、广告拦截、Google、AI 服务、漏网之鱼） |
+| `config/rules.yaml` | 模板规则，**自上而下匹配，命中即停** |
 
----
+## 2) 规则顺序的原则
 
-## 3) ALL 级分组与全局规则
+范围小、更具体的放前面，范围大的放后面。例如 `Google.list` 含 `DOMAIN-KEYWORD,google`，
+会匹配所有带 google 的域名，所以 `Gemini` 放它前面，`AI` 放它之后只处理非 Google 的 AI 服务。
 
-- 为每个模板组生成一个 `ALL/<组名>` 分组
-- 全局 `rules` 使用模板规则，并把策略重写为 `ALL/<组名>`
+当前顺序（节选）：`LocalAreaNetwork → 广告拦截 → Gemini → Google → AI → GoogleCN → SteamCN → ... → GEOIP,CN → MATCH`。
+`GoogleCN` 排在 `Google` 后面，所以大部分条目会被 `Google` 先匹配，若 Google 更新/推送异常，把它挪到 `Google` 前面。
 
----
+## 3) LEAF：节点怎么进组
 
-## 4) 模式 B 的优缺点
+`groups.yaml` 里 `proxies` 写 `LEAF` 表示「该入口的全部节点」：
 
-优点：
-- 规则体系统一、易理解、易维护
-- 订阅之间不会互相污染 group 名（全是 `ns/` 前缀）
-- 适合快速稳定地跑起来
+- 入口引用的**远程订阅** → 写入该组的 `use`
+- 入口引用的**本地节点** → 写入该组的 `proxies`
+- 两者可以同时存在于同一个组
 
-缺点：
-- 订阅自带的复杂分组树会被抛弃
-- 如果你很依赖订阅自带的细分策略组，需要回到模式 A 或自行扩展模板
+没有 `LEAF` 的组只保留内置策略（DIRECT/REJECT）和对其他组的引用。
 
----
+## 4) 每个入口一份
 
-下一篇：
-→ [准备订阅片段 YAML & 导入流程](04-snippets-and-import.md)
+每个入口生成 `入口名/组名` 的全套分组，以及 `sub-rules.rules_<入口名>`，监听端口通过 `listeners[].rule` 绑定。
+标记 `default: true` 的入口，它的规则同时作为全局 `rules`。
+
+## 5) 怎么改模板
+
+都只改 `config/` 下的文件，不用动 `merge.py`。
+
+**加一个规则集**（`rulesets.yaml`）：
+
+```yaml
+rulesets:
+  MyList: https://example.com/my.list      # 其余字段自动补全
+  Custom:                                   # 或单独覆盖字段
+    url: https://example.com/c.yaml
+    behavior: domain
+    format: yaml
+```
+
+**加一个组**（`groups.yaml`）：
+
+```yaml
+  - name: 🎮 游戏
+    type: select
+    proxies: [🚀 节点选择, DIRECT, LEAF]
+```
+
+**加一条规则**（`rules.yaml`，位置决定优先级，策略写组名，不用加前缀）：
+
+```yaml
+  - RULE-SET,MyList,🎮 游戏
+```
+
+校验会兜底：`rules.yaml` 引用了没声明的规则集会直接报错；声明了但没用的规则集会被忽略并警告；没被引用的组会警告。
+
+## 6) 优缺点
+
+- 优点：规则体系统一，易维护；多个订阅之间组名互不污染。
+- 缺点：订阅自带的细分策略组会被抛弃，需要的话改用 [preserve 模式](02-preserve.md)。
