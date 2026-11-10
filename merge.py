@@ -46,6 +46,7 @@ PROVIDER_PLACEHOLDERS: Set[str] = {"PROVIDER", "__PROVIDER__", "{PROVIDER}", "{p
 LEAF = "LEAF"
 DEFAULT_PLACEHOLDER = "{DEFAULT}"
 PROFILES = ("template", "preserve")
+SHARED = "shared"  # groups.yaml `scope: shared`: one global copy over all sources, no entry prefix
 SNIPPET_UA = "clash-verge/v2.4.4"  # 默认伪装成 Clash Verge；可用 --ua 覆盖
 
 
@@ -670,39 +671,75 @@ def build_template_entry(
     cfg: dict, entry: Entry, infos: Dict[str, SourceInfo], tpl: Templates, standalone: Set[str]
 ) -> str:
     prefix = entry.name
-    names = {g["name"] for g in tpl.groups if isinstance(g.get("name"), str)}
+    shared, per_entry = template_group_names(tpl)
     remote = [ns for ns in entry.sources if infos[ns].has_provider]
     local = [n for ns in entry.sources for n in infos[ns].local_names]
 
+    def resolve(item: str) -> str:
+        return f"{prefix}/{item}" if item in per_entry else item  # shared groups keep their plain name
+
     for g in tpl.groups:
-        g2 = {k: copy.deepcopy(v) for k, v in g.items() if k not in {"proxies", "standalone"}}
-        g2["name"] = f"{prefix}/{g['name']}"
+        if g.get("scope") == SHARED:
+            continue
+        g2 = make_group(g, f"{prefix}/{g['name']}", resolve, remote, local)
         if g.get("standalone"):
             standalone.add(g2["name"])
-        proxies: List[str] = []
-        needs_leaf = False
-        for item in g.get("proxies") or []:
-            if item == LEAF:
-                needs_leaf = True
-            elif item in names:
-                proxies.append(f"{prefix}/{item}")
-            else:
-                proxies.append(item)
-        if needs_leaf:
-            proxies.extend(local)
-            if remote:
-                g2["use"] = list(remote)
-        proxies = dedup(proxies)
-        if proxies:
-            g2["proxies"] = proxies
-        elif not g2.get("use"):
-            g2["proxies"] = ["DIRECT"]
         cfg["proxy-groups"].append(g2)
 
-    maps = Maps(group_map={n: f"{prefix}/{n}" for n in names}, proxy_map={}, ruleset_map={})
+    group_map = {n: f"{prefix}/{n}" for n in per_entry}
+    maps = Maps(group_map=group_map, proxy_map={}, ruleset_map={})
     key = f"rules_{entry.name}"
     cfg["sub-rules"][key] = [rewrite_rule_line(r, maps) for r in tpl.rules]
     return key
+
+
+def template_group_names(tpl: Templates) -> Tuple[Set[str], Set[str]]:
+    """(shared group names, per-entry group names)."""
+    shared = {g["name"] for g in tpl.groups if isinstance(g.get("name"), str) and g.get("scope") == SHARED}
+    per_entry = {g["name"] for g in tpl.groups if isinstance(g.get("name"), str)} - shared
+    return shared, per_entry
+
+
+def make_group(g: dict, name: str, resolve: Any, remote: List[str], local: List[str]) -> dict:
+    """Instantiate one template group: resolve group refs, expand LEAF into use (remote) + proxies (local)."""
+    g2 = {k: copy.deepcopy(v) for k, v in g.items() if k not in {"proxies", "standalone", "scope"}}
+    g2["name"] = name
+    proxies: List[str] = []
+    needs_leaf = False
+    for item in g.get("proxies") or []:
+        if item == LEAF:
+            needs_leaf = True
+        else:
+            proxies.append(resolve(item) if isinstance(item, str) else item)
+    if needs_leaf:
+        proxies.extend(local)
+        if remote:
+            g2["use"] = list(remote)
+    proxies = dedup(proxies)
+    if proxies:
+        g2["proxies"] = proxies
+    elif not g2.get("use"):
+        g2["proxies"] = ["DIRECT"]
+    return g2
+
+
+def build_shared_groups(
+    cfg: dict, tpl: Templates, infos: Dict[str, SourceInfo], used_ns: List[str], standalone: Set[str]
+) -> None:
+    """Groups with `scope: shared` are created once, without an entry prefix, over ALL sources."""
+    shared, per_entry = template_group_names(tpl)
+    if not shared:
+        return
+    remote = [ns for ns in used_ns if infos[ns].has_provider]
+    local = dedup([n for ns in used_ns for n in infos[ns].local_names])
+    # a shared group can only reference shared groups / builtins (per-entry groups differ by entry)
+    for g in tpl.groups:
+        if g.get("scope") != SHARED:
+            continue
+        g2 = make_group(g, g["name"], lambda item: item, remote, local)
+        if g.get("standalone"):
+            standalone.add(g2["name"])
+        cfg["proxy-groups"].append(g2)
 
 
 def template_ruleset_refs(tpl: Templates) -> List[str]:
@@ -827,6 +864,10 @@ def build_config(
             "udp": True,
             "rule": key,
         })
+
+    # 2b) shared groups (e.g. the single latency-test group over all nodes)
+    if any(e.profile == "template" for e in entries):
+        build_shared_groups(cfg, tpl, infos, used_ns, standalone)
 
     # 3) rule-providers used by the template
     if any(e.profile == "template" for e in entries):

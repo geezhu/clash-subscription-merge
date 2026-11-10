@@ -2,6 +2,8 @@
 # proxies 里可写：DIRECT / REJECT 等内置、本文件里的其他组名、LEAF。
 # LEAF = "该入口的全部节点"：远程订阅 -> 写入 use，本地节点 -> 写入 proxies（可同时存在）。
 # standalone: true = 不被其他组/规则引用的独立组（如测速组），不会触发"未被引用"警告，该字段不会写入输出。
+# scope: shared = 全局只生成一份：名字不加入口前缀，LEAF 展开为【所有来源】的全部节点（与是否有 ALL 入口无关）。
+#   共享组只能引用内置策略或其他共享组。该字段不会写入输出。
 groups:
   - name: 🚀 节点选择
     type: select
@@ -9,6 +11,7 @@ groups:
 
   - name: ♻️ 延迟测试
     type: url-test
+    scope: shared
     standalone: true
     url: https://www.gstatic.com/generate_204
     interval: 300
