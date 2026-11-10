@@ -15,7 +15,7 @@
 1. 远程订阅：生成 `proxy-providers.ns`，节点名保持原样（来源设了 `prefix` 才加前缀）
 2. 订阅里的 group 改名为 `entry/<原名>`；本地节点保持原名，仅在与已有节点重名时改名
 3. 对订阅自带的 `proxy-groups` 做“叶子/非叶子”重写（下面详解）
-4. 订阅自带的 `rule-providers` 改名为 `entry__<原名>`，`path` 同步改为 `./rules/entry__<原名>.yaml`，避免多个入口互相覆盖文件
+4. 订阅自带的 `rule-providers` 改名为 `entry__<原名>`，`path` 同步改为 `./rules/entry__<原名>` + 原扩展名，避免多个入口互相覆盖文件
 5. 订阅自带 `rules` 进入 `sub-rules.rules_<entry>`，并让该端口 listener 绑定 `rule: rules_<entry>`；规则里的策略字段（`no-resolve` 前一位）会被改写，没有 `MATCH` 时自动补 `MATCH,DIRECT`
 
 > 命名规则：**组名加入口名前缀 `entry/`，节点名默认不加前缀**。

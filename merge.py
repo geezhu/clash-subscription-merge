@@ -391,7 +391,7 @@ def load_templates(config_dir: Path) -> Templates:
     for name, v in (rs.get("rulesets") or {}).items():
         spec = dict(v) if isinstance(v, dict) else {"url": v}
         p = {**defaults, **spec}
-        p.setdefault("path", f"./rules/{name}.yaml")
+        p.setdefault("path", f"./rules/{name}.{'yaml' if p.get('format') == 'yaml' else 'list'}")  # 扩展名跟随 format
         rulesets[name] = p
 
     groups = (load_yaml_file(config_dir / "groups.yaml") or {}).get("groups") or []
@@ -529,7 +529,8 @@ def namespace_rule_providers(rps: dict, maps: Maps) -> dict:
         new_key = maps.ruleset_map.get(k, k)
         v2 = dict(v) if isinstance(v, dict) else v
         if isinstance(v2, dict) and v2.get("path"):
-            v2["path"] = f"./rules/{new_key}.yaml"  # avoid file clashes between entries
+            ext = Path(str(v2["path"])).suffix or ".yaml"  # keep the original extension
+            v2["path"] = f"./rules/{new_key}{ext}"  # avoid file clashes between entries
         out[new_key] = v2
     return out
 

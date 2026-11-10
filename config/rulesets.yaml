@@ -1,5 +1,5 @@
 # 规则集：只在这里声明一次。
-# 默认值：type=http, behavior=classical, format=text, path=./rules/<名字>.yaml
+# 默认值：type=http, behavior=classical, format=text, path=./rules/<名字>.list（format: yaml 时扩展名为 .yaml）
 # 只有被 rules.yaml 引用的规则集才会写进输出（未引用的会给出警告）。
 defaults:
   type: http
