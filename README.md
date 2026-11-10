@@ -32,6 +32,8 @@ python merge.py
 | `--sources 文件` | 指定订阅配置文件（默认 `sources.yaml`） |
 | `--yes` | 存在 `sources.yaml` 时直接复用，不询问 |
 | `--refresh` | 强制重新下载订阅片段 |
+| `--ua UA` | 下载订阅时使用的 User-Agent（仅 preserve 模式下载订阅时用到） |
+| `--probe-ua` | 探测本机 Clash 客户端的真实 UA，并保存到 `sources.yaml` |
 | `--out 文件` | 输出路径（默认 `merged.yaml`） |
 | `--listen 地址` | 监听地址（默认 `127.0.0.1`） |
 | `--config-dir 目录` | 模板目录（默认 `config/`） |

@@ -14,7 +14,7 @@
 | 文件 | 内容 |
 |---|---|
 | `config/rulesets.yaml` | 规则集，只写名字和 URL；`type/behavior/format/path` 由 `defaults` 补全 |
-| `config/groups.yaml` | 模板分组：7 个（节点选择、自动选择、全球直连、广告拦截、Google、AI 服务、漏网之鱼） |
+| `config/groups.yaml` | 模板分组：7 个（节点选择、延迟测试、全球直连、广告拦截、Google、AI 服务、漏网之鱼） |
 | `config/rules.yaml` | 模板规则，**自上而下匹配，命中即停** |
 
 ## 2) 规则顺序的原则
@@ -34,6 +34,8 @@
 - 两者可以同时存在于同一个组
 
 没有 `LEAF` 的组只保留内置策略（DIRECT/REJECT）和对其他组的引用。
+
+`standalone: true` 的组（如 `♻️ 延迟测试`）不被其他组或规则引用，只用来在面板里查看各节点延迟，校验时不会警告“未被引用”，该字段不会写入输出。
 
 ## 4) 每个入口一份
 

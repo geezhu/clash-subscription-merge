@@ -26,7 +26,9 @@ import copy
 import re
 import shutil
 import sys
+import threading
 from dataclasses import dataclass, field
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
@@ -43,7 +45,7 @@ PROVIDER_PLACEHOLDERS: Set[str] = {"PROVIDER", "__PROVIDER__", "{PROVIDER}", "{p
 LEAF = "LEAF"
 DEFAULT_PLACEHOLDER = "{DEFAULT}"
 PROFILES = ("template", "preserve")
-SNIPPET_UA = "clash.meta"
+SNIPPET_UA = "clash-verge/v2.4.4"  # 默认伪装成 Clash Verge；可用 --ua 覆盖
 
 
 # -----------------------------
@@ -320,10 +322,23 @@ def load_sources(path: Path) -> Tuple[List[Source], List[Entry]]:
     return sources, entries
 
 
-def save_sources(path: Path, sources: List[Source], entries: List[Entry]) -> None:
+def load_saved_ua(path: Path) -> Optional[str]:
+    data = load_yaml_file(path)
+    ua = data.get("ua") if isinstance(data, dict) else None
+    return str(ua).strip() or None if ua else None
+
+
+def needs_download(sources: List[Source], entries: List[Entry]) -> bool:
+    """True if some preserve entry uses a remote source (the only case where the script downloads)."""
+    remote = {s.ns for s in sources if not s.is_local}
+    return any(e.profile == "preserve" and e.sources[0] in remote for e in entries)
+
+
+def save_sources(path: Path, sources: List[Source], entries: List[Entry], ua: Optional[str] = None) -> None:
     if path.exists():
         shutil.copyfile(path, path.with_name(path.name + ".bak"))
     data = {
+        **({"ua": ua} if ua else {}),
         "sources": [
             {k: v for k, v in (("ns", s.ns), ("url", s.url), ("snippet", s.snippet)) if v is not None}
             for s in sources
@@ -371,23 +386,90 @@ def load_templates(config_dir: Path) -> Templates:
 # -----------------------------
 # Snippet fetching
 # -----------------------------
-def fetch_snippet(src: Source, path: Path, refresh: bool) -> None:
+def probe_ua(timeout: int = 180) -> Optional[str]:
+    """
+    Start a throw-away local HTTP server and wait for a Clash client to fetch it;
+    return the User-Agent that client sent (None on timeout / Ctrl+C).
+    Binds 127.0.0.1 on a free port; only the User-Agent header is read.
+    """
+    got: Dict[str, str] = {}
+    done = threading.Event()
+    body = b"proxies: []\nproxy-groups: []\nrules:\n  - MATCH,DIRECT\n"
+
+    class Handler(BaseHTTPRequestHandler):
+        def _reply(self, head_only: bool) -> None:
+            got.setdefault("ua", self.headers.get("User-Agent", "").strip())
+            self.send_response(200)
+            self.send_header("Content-Type", "text/yaml; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Subscription-Userinfo", "upload=0; download=0; total=0; expire=0")
+            self.end_headers()
+            if not head_only:
+                self.wfile.write(body)
+            done.set()
+
+        def do_GET(self) -> None:
+            self._reply(False)
+
+        def do_HEAD(self) -> None:
+            self._reply(True)
+
+        def log_message(self, *args: Any) -> None:  # silence default logging
+            pass
+
+    server = HTTPServer(("127.0.0.1", 0), Handler)
+    port = server.server_address[1]
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    print(f"\n[探测] 已监听 http://127.0.0.1:{port}/", flush=True)
+    print("       请在你的 Clash 客户端里新建订阅，地址填上面这个，然后点更新/下载。", flush=True)
+    print(f"       最多等待 {timeout} 秒，Ctrl+C 跳过。探测完可在客户端里删除这个测试订阅。")
+    try:
+        waited = 0
+        while not done.wait(1) and waited < timeout:
+            waited += 1
+    except KeyboardInterrupt:
+        print("\n[探测] 已跳过")
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    ua = got.get("ua") or None
+    if ua:
+        print(f"[探测] 收到 User-Agent: {ua}")
+    else:
+        print("[探测] 没有收到请求，将使用默认 UA")
+    return ua
+
+
+def redact_urls(text: str) -> str:
+    """Keep only scheme://host of any URL, so tokens in query/path never reach logs."""
+    text = re.sub(r"(https?://[^/\s'\"]+)[^\s'\"]*", r"\1/<已隐藏>", text)
+    # urllib3 reports "with url: /path?query" (no host) on connection errors
+    return re.sub(r"(url:\s*)/[^\s)'\"]*", r"\1/<已隐藏>", text)
+
+
+class FetchError(ValueError):
+    """Downloading a subscription snippet failed (network / blocked UA / not Clash YAML)."""
+
+
+def fetch_snippet(src: Source, path: Path, refresh: bool, ua: str = SNIPPET_UA) -> None:
     """Download a Clash YAML subscription into `path` (cache). Base64 lists are not supported."""
     if path.exists() and not refresh:
         return
     try:
         import requests
 
-        r = requests.get(src.url, headers={"User-Agent": SNIPPET_UA}, timeout=30)
+        r = requests.get(src.url, headers={"User-Agent": ua}, timeout=30)
         r.raise_for_status()
         data = yaml.load(r.text)
         if not isinstance(data, dict) or not (data.get("proxies") or data.get("proxy-groups")):
             raise ValueError("返回内容不是 Clash YAML（可能是 Base64/v2ray 链接列表，暂不支持）")
     except Exception as e:  # noqa: BLE001
+        msg = redact_urls(f"{type(e).__name__}: {e}")
         if path.exists():
-            print(f"[警告] 下载 {src.ns} 失败，使用缓存 {path}: {e}")
+            print(f"[警告] 下载 {src.ns} 失败，使用缓存 {path}: {msg}")
             return
-        raise ValueError(f"下载订阅 {src.ns} 失败: {e}") from e
+        raise FetchError(f"下载订阅 {src.ns} 失败: {msg}") from None
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(r.text, encoding="utf-8")
     print(f"[信息] 已下载 {src.ns} -> {path}")
@@ -569,15 +651,19 @@ def build_preserve_entry(cfg: dict, entry: Entry, infos: Dict[str, SourceInfo]) 
 # -----------------------------
 # template profile
 # -----------------------------
-def build_template_entry(cfg: dict, entry: Entry, infos: Dict[str, SourceInfo], tpl: Templates) -> str:
+def build_template_entry(
+    cfg: dict, entry: Entry, infos: Dict[str, SourceInfo], tpl: Templates, standalone: Set[str]
+) -> str:
     prefix = entry.name
     names = {g["name"] for g in tpl.groups if isinstance(g.get("name"), str)}
     remote = [ns for ns in entry.sources if infos[ns].has_provider]
     local = [n for ns in entry.sources for n in infos[ns].local_names]
 
     for g in tpl.groups:
-        g2 = {k: copy.deepcopy(v) for k, v in g.items() if k != "proxies"}
+        g2 = {k: copy.deepcopy(v) for k, v in g.items() if k not in {"proxies", "standalone"}}
         g2["name"] = f"{prefix}/{g['name']}"
+        if g.get("standalone"):
+            standalone.add(g2["name"])
         proxies: List[str] = []
         needs_leaf = False
         for item in g.get("proxies") or []:
@@ -623,7 +709,11 @@ def build_config(
     entries: List[Entry],
     listen_addr: str = "127.0.0.1",
     refresh: bool = False,
+    ua: str = SNIPPET_UA,
+    standalone: Optional[Set[str]] = None,
 ) -> dict:
+    """`standalone` (optional, filled in place): names of groups flagged standalone in groups.yaml."""
+    standalone = standalone if standalone is not None else set()
     src_by_ns = {s.ns: s for s in sources}
     default_entry = next(e for e in entries if e.default)
 
@@ -659,7 +749,7 @@ def build_config(
         if src.is_local or ns in preserve_ns:
             path = Path(src.snippet or f"snippets/{ns}.yaml")
             if not src.is_local:
-                fetch_snippet(src, path, refresh)
+                fetch_snippet(src, path, refresh, ua)
             snippet = load_yaml_file(path)
             if not isinstance(snippet, dict):
                 raise ValueError(f"{path} 不是 YAML dict")
@@ -680,7 +770,7 @@ def build_config(
         if e.profile == "preserve":
             key = build_preserve_entry(cfg, e, infos)
         else:
-            key = build_template_entry(cfg, e, infos, tpl)
+            key = build_template_entry(cfg, e, infos, tpl, standalone)
         cfg["listeners"].append({
             "name": f"in-{e.name}",
             "type": "mixed",
@@ -709,7 +799,8 @@ def build_config(
 # -----------------------------
 # Validation
 # -----------------------------
-def validate(cfg: dict) -> Tuple[List[str], List[str]]:
+def validate(cfg: dict, standalone: Optional[Set[str]] = None) -> Tuple[List[str], List[str]]:
+    standalone = standalone or set()
     errors: List[str] = []
     warnings: List[str] = []
 
@@ -756,7 +847,7 @@ def validate(cfg: dict) -> Tuple[List[str], List[str]]:
     for k in sorted(rps - used_rps):
         warnings.append(f"规则集 {k} 已定义但未被任何规则使用")
     for n in group_names:
-        if n not in referenced:
+        if n not in referenced and n not in standalone:
             warnings.append(f"分组 {n} 未被任何规则或分组引用")
 
     ports: Dict[int, str] = {}
@@ -789,6 +880,8 @@ def main() -> None:
     ap.add_argument("--listen", default="127.0.0.1", help="listeners 监听地址")
     ap.add_argument("--yes", action="store_true", help="存在 sources.yaml 时直接复用，不询问")
     ap.add_argument("--refresh", action="store_true", help="强制重新下载订阅 snippet")
+    ap.add_argument("--ua", help=f"下载订阅时使用的 User-Agent（优先级：--ua > sources.yaml 的 ua > 默认 {SNIPPET_UA}）")
+    ap.add_argument("--probe-ua", action="store_true", help="探测本机 Clash 客户端的 User-Agent 并保存到 sources.yaml")
     args = ap.parse_args()
 
     config_dir = Path(args.config_dir).expanduser().resolve()
@@ -797,19 +890,52 @@ def main() -> None:
 
     sources_path = Path(args.sources).expanduser().resolve()
     reuse = False
+    saved_ua: Optional[str] = None
     if sources_path.exists():
         sources, entries = load_sources(sources_path)
+        saved_ua = load_saved_ua(sources_path)
         print_summary(sources, entries)
         reuse = args.yes or prompt_yes_no(f"发现 {sources_path.name}，是否复用？", True)
     if not reuse:
         sources, entries = prompt_sources_interactive()
         check_structure(sources, entries)
-        save_sources(sources_path, sources, entries)
+        saved_ua = None
+        # 只有 preserve + 远程订阅才会由脚本下载订阅，此时才有必要问 UA
+        if not args.probe_ua and not args.ua and needs_download(sources, entries):
+            args.probe_ua = prompt_yes_no(
+                f"\npreserve 模式需要下载订阅，默认 UA 为 {SNIPPET_UA}。是否用本机 Clash 客户端探测真实 UA？", False)
+
+    ua = args.ua or saved_ua
+    probed = False
+    if args.probe_ua:
+        found = probe_ua()
+        if found:
+            ua, probed = found, True
+
+    if not reuse or probed:
+        save_sources(sources_path, sources, entries, ua=ua if (probed or saved_ua) else None)
         print(f"[信息] 已保存配置：{sources_path}")
 
-    cfg = build_config(base, tpl, sources, entries, listen_addr=args.listen, refresh=args.refresh)
+    standalone: Set[str] = set()
+    try:
+        cfg = build_config(base, tpl, sources, entries, listen_addr=args.listen,
+                           refresh=args.refresh, standalone=standalone, ua=ua or SNIPPET_UA)
+    except FetchError as e:
+        # 下载订阅失败，常见原因是机场按 UA 拦截；交互模式下提示探测 UA 并重试一次
+        print(f"[错误] {e}")
+        if args.yes or args.probe_ua or not prompt_yes_no("是否探测本机 Clash 客户端的 UA 后重试？", True):
+            raise SystemExit(2)
+        found = probe_ua()
+        if not found:
+            raise SystemExit(2)
+        ua = found
+        save_sources(sources_path, sources, entries, ua=ua)
+        print(f"[信息] 已将 UA 保存到 {sources_path}")
+        standalone.clear()
+        cfg = build_config(base, tpl, sources, entries, listen_addr=args.listen,
+                           refresh=True, standalone=standalone, ua=ua)
 
-    errors, warnings = validate(cfg)
+    errors, warnings = validate(cfg, standalone)
     for w in warnings:
         print(f"[警告] {w}")
     if errors:
