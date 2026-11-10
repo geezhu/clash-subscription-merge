@@ -913,7 +913,35 @@ def build_config(
 
     # 4) global rules come from the default entry
     cfg["rules"] = list(cfg["sub-rules"][f"rules_{default_entry.name}"])
-    return cfg
+    return tidy_order(cfg)
+
+
+TOP_LEVEL_ORDER = ("rule-providers", "proxy-providers", "proxies", "proxy-groups", "listeners", "sub-rules", "rules")
+
+
+def tidy_order(cfg: dict) -> dict:
+    """Readable key order: base settings, rule-providers, then proxy-providers, proxies and groups, then listeners and rules;
+    inside a group `use` (providers) comes right before `proxies`."""
+    managed = set(TOP_LEVEL_ORDER)
+    out = {k: v for k, v in cfg.items() if k not in managed}
+    for k in TOP_LEVEL_ORDER:
+        if k in cfg:
+            out[k] = cfg[k]
+    groups = []
+    for g in out.get("proxy-groups", []):
+        if isinstance(g, dict) and "use" in g and "proxies" in g:
+            g2: dict = {}
+            for k, v in g.items():
+                if k == "use":
+                    continue
+                if k == "proxies":
+                    g2["use"] = g["use"]
+                g2[k] = v
+            g = g2
+        groups.append(g)
+    if "proxy-groups" in out:
+        out["proxy-groups"] = groups
+    return out
 
 
 # -----------------------------
