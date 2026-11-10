@@ -1,4 +1,4 @@
-# 通用设置，与订阅无关。先沿用 merge.py 里 DEFAULT_BASE_CONFIG 的内容，暂不改动。
+# 通用设置，与订阅无关。{DEFAULT} 会被脚本替换为默认入口名。
 mode: rule
 log-level: info
 ipv6: false
@@ -16,6 +16,9 @@ dns:
   nameserver:
     - https://1.1.1.1/dns-query#{DEFAULT}/🤖 AI服务
     - https://8.8.8.8/dns-query#{DEFAULT}/🤖 AI服务
+  # 国内域名用国内 DNS 直连解析；其余（含 Google 等）走上面的 DoH。geosite:cn 不含 Google/Apple/Microsoft。
+  nameserver-policy:
+    "geosite:cn": [223.5.5.5, 119.29.29.29]
   enhanced-mode: fake-ip
   fake-ip-range: 198.18.0.1/16
   fake-ip-filter:
