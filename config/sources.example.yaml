@@ -4,6 +4,7 @@
 sources:
   - ns: sub1
     url: https://example.com/sub?token=xxx   # 远程订阅（需为 Clash YAML）
+    # prefix: "A·"                           # 可选：给节点名加前缀；默认不加，本地节点重名会自动改名
   - ns: myvps
     url: local
     snippet: snippets/myvps.yaml             # local 时必填：含 proxies 的 yaml

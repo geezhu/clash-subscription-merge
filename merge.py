@@ -56,6 +56,7 @@ class Source:
     ns: str
     url: str  # "local" or a subscription URL
     snippet: Optional[str] = None
+    prefix: str = ""  # optional node-name prefix (default: none, keep original names)
 
     @property
     def is_local(self) -> bool:
@@ -81,7 +82,9 @@ class Templates:
 @dataclass
 class SourceInfo:
     has_provider: bool
+    prefix: str = ""
     local_names: List[str] = field(default_factory=list)
+    name_map: Dict[str, str] = field(default_factory=dict)  # snippet node name -> final node name
     snippet: Optional[dict] = None
 
 
@@ -128,6 +131,16 @@ def dedup(items: List[Any]) -> List[Any]:
             out.append(it)
             seen.add(key)
     return out
+
+
+def unique_name(base: str, suffix: str, taken: Set[str]) -> str:
+    """base-suffix, base-suffix2, ... until it is not in `taken`."""
+    cand = f"{base}-{suffix}"
+    i = 2
+    while cand in taken:
+        cand = f"{base}-{suffix}{i}"
+        i += 1
+    return cand
 
 
 def sanitize_name(name: str, what: str = "名字") -> str:
@@ -305,7 +318,8 @@ def load_sources(path: Path) -> Tuple[List[Source], List[Entry]]:
     if not isinstance(data, dict):
         raise ValueError(f"{path} 顶层必须是 key:value")
     sources = [
-        Source(ns=sanitize_name(s["ns"], "ns"), url=str(s["url"]).strip(), snippet=s.get("snippet"))
+        Source(ns=sanitize_name(s["ns"], "ns"), url=str(s["url"]).strip(), snippet=s.get("snippet"),
+               prefix=str(s.get("prefix") or ""))
         for s in data.get("sources") or []
     ]
     entries = [
@@ -340,7 +354,8 @@ def save_sources(path: Path, sources: List[Source], entries: List[Entry], ua: Op
     data = {
         **({"ua": ua} if ua else {}),
         "sources": [
-            {k: v for k, v in (("ns", s.ns), ("url", s.url), ("snippet", s.snippet)) if v is not None}
+            {k: v for k, v in (("ns", s.ns), ("url", s.url), ("snippet", s.snippet),
+                               ("prefix", s.prefix or None)) if v is not None}
             for s in sources
         ],
         "entries": [
@@ -478,17 +493,13 @@ def fetch_snippet(src: Source, path: Path, refresh: bool, ua: str = SNIPPET_UA) 
 # -----------------------------
 # preserve profile (keep the subscription's own groups/rules)
 # -----------------------------
-def build_maps(snippet: dict, group_prefix: str, ns: str) -> Maps:
+def build_maps(snippet: dict, group_prefix: str, name_map: Dict[str, str]) -> Maps:
     group_map = {
         g["name"]: f"{group_prefix}/{g['name']}"
         for g in snippet.get("proxy-groups") or []
         if isinstance(g, dict) and isinstance(g.get("name"), str) and g["name"]
     }
-    proxy_map = {
-        p["name"]: f"{ns}/{p['name']}"
-        for p in snippet.get("proxies") or []
-        if isinstance(p, dict) and isinstance(p.get("name"), str) and p["name"]
-    }
+    proxy_map = dict(name_map)
     rps = snippet.get("rule-providers") or {}
     ruleset_map = {k: f"{group_prefix}__{k}" for k in rps} if isinstance(rps, dict) else {}
     return Maps(group_map=group_map, proxy_map=proxy_map, ruleset_map=ruleset_map)
@@ -537,7 +548,9 @@ def rewrite_rule_line(line: str, maps: Maps) -> str:
     return ",".join(parts)
 
 
-def rewrite_group(g: dict, ns: str, maps: Maps, has_provider: bool, raw_names: Set[str]) -> dict:
+def rewrite_group(
+    g: dict, ns: str, maps: Maps, has_provider: bool, raw_names: Set[str], prefix: str = ""
+) -> dict:
     """
     - rename group -> <prefix>/group
     - local: rewrite group / local-proxy references, keep everything else
@@ -579,7 +592,7 @@ def rewrite_group(g: dict, ns: str, maps: Maps, has_provider: bool, raw_names: S
             elif item in raw_names:
                 kept.append(maps.group_map.get(item, item))
             else:
-                nodes.append(item if item.startswith(f"{ns}/") else f"{ns}/{item}")
+                nodes.append(item if prefix and item.startswith(prefix) else f"{prefix}{item}")
         g2["use"] = [ns]
         g2["filter"] = regex_union_exact(nodes)
         if kept:
@@ -629,11 +642,12 @@ def build_preserve_entry(cfg: dict, entry: Entry, infos: Dict[str, SourceInfo]) 
     if not isinstance(rules, list):
         raise ValueError(f"来源 {ns} 的 rules 必须是列表")
 
-    maps = build_maps(snippet, entry.name, ns)
+    maps = build_maps(snippet, entry.name, info.name_map)
     raw_names = raw_group_names(snippet)
     for g in groups:
         if isinstance(g, dict):
-            cfg["proxy-groups"].append(rewrite_group(g, ns, maps, info.has_provider, raw_names))
+            cfg["proxy-groups"].append(
+                rewrite_group(g, ns, maps, info.has_provider, raw_names, prefix=info.prefix))
 
     rps = snippet.get("rule-providers")
     if isinstance(rps, dict):
@@ -726,13 +740,13 @@ def build_config(
     used_ns = dedup([ns for e in entries for ns in e.sources])
     preserve_ns = {ns for e in entries if e.profile == "preserve" for ns in e.sources}
 
-    # 1) sources: providers, snippets, local proxies (once per source)
+    # 1) sources: providers + snippets. Remote node names are only known when a snippet is loaded.
     infos: Dict[str, SourceInfo] = {}
     for ns in used_ns:
         src = src_by_ns[ns]
-        info = SourceInfo(has_provider=not src.is_local)
+        info = SourceInfo(has_provider=not src.is_local, prefix=src.prefix)
         if info.has_provider:
-            cfg["proxy-providers"][ns] = {
+            provider: dict = {
                 "type": "http",
                 "url": src.url.strip(),
                 "path": f"./proxy_providers/{ns}.yaml",
@@ -744,8 +758,10 @@ def build_config(
                     "lazy": True,
                     "expected-status": 204,
                 },
-                "override": {"additional-prefix": f"{ns}/"},
             }
+            if src.prefix:  # no prefix by default: keep the subscription's original node names
+                provider["override"] = {"additional-prefix": src.prefix}
+            cfg["proxy-providers"][ns] = provider
         if src.is_local or ns in preserve_ns:
             path = Path(src.snippet or f"snippets/{ns}.yaml")
             if not src.is_local:
@@ -754,16 +770,38 @@ def build_config(
             if not isinstance(snippet, dict):
                 raise ValueError(f"{path} 不是 YAML dict")
             info.snippet = snippet
-            if src.is_local:
+            if not src.is_local:
                 for p in snippet.get("proxies") or []:
                     if isinstance(p, dict) and isinstance(p.get("name"), str) and p["name"]:
-                        p2 = dict(p)
-                        p2["name"] = f"{ns}/{p['name']}"
-                        cfg["proxies"].append(p2)
-                        info.local_names.append(p2["name"])
-                if not info.local_names:
-                    print(f"[警告] 本地来源 {ns} 没有可用的 proxies")
+                        info.name_map[p["name"]] = f"{src.prefix}{p['name']}"
         infos[ns] = info
+
+    # 1b) local nodes keep their names; a local node is renamed only when it clashes with an
+    #     already-known node (known remote names, or an earlier local node). Remote-vs-remote
+    #     clashes are not handled (and, for template mode, cannot be seen before mihomo fetches).
+    taken: Set[str] = {n for i in infos.values() if i.has_provider for n in i.name_map.values()}
+    for ns in used_ns:
+        src = src_by_ns[ns]
+        if not src.is_local:
+            continue
+        info = infos[ns]
+        for p in (info.snippet or {}).get("proxies") or []:
+            if not (isinstance(p, dict) and isinstance(p.get("name"), str) and p["name"]):
+                continue
+            orig = p["name"]
+            name = f"{src.prefix}{orig}"
+            if name in taken:
+                new = unique_name(name, ns, taken)
+                print(f"[提示] 本地节点 {name} 与已有节点重名，已重命名为 {new}")
+                name = new
+            taken.add(name)
+            p2 = dict(p)
+            p2["name"] = name
+            cfg["proxies"].append(p2)
+            info.local_names.append(name)
+            info.name_map[orig] = name
+        if not info.local_names:
+            print(f"[警告] 本地来源 {ns} 没有可用的 proxies")
 
     # 2) entries
     for e in entries:

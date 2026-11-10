@@ -22,11 +22,11 @@
 
 ### 远程订阅（proxy-providers）
 - 订阅链接交给 `proxy-providers` 管理：定时更新、健康检查
-- 典型搭配：`override.additional-prefix: ns/` 给节点名加命名空间前缀，避免多订阅重名
+- 默认不改节点名；需要时给来源加 `prefix`，会写成 `override.additional-prefix`，用来区分多个订阅里的同名节点
 
 ### local 节点（proxies）
 - local 不走 provider，节点写在 `proxies:` 里
-- 一般也会给节点名加 `ns/` 前缀，保证全局唯一
+- 节点名保持原样；与已有节点重名时，本地节点会被自动改名（见 [节点重名](04-snippets-and-import.md#节点重名怎么处理)）
 
 ## 4. proxy-groups：规则最终落点（policy）
 

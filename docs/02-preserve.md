@@ -12,13 +12,13 @@
 
 对每个 preserve 入口（入口名 `entry`，引用的订阅命名空间 `ns`）：
 
-1. 远程订阅：生成 `proxy-providers.ns`，节点名自动加前缀 `ns/`
-2. 订阅里的 group 改名为 `entry/<原名>`；本地节点改名为 `ns/<原名>`
+1. 远程订阅：生成 `proxy-providers.ns`，节点名保持原样（来源设了 `prefix` 才加前缀）
+2. 订阅里的 group 改名为 `entry/<原名>`；本地节点保持原名，仅在与已有节点重名时改名
 3. 对订阅自带的 `proxy-groups` 做“叶子/非叶子”重写（下面详解）
 4. 订阅自带的 `rule-providers` 改名为 `entry__<原名>`，`path` 同步改为 `./rules/entry__<原名>.yaml`，避免多个入口互相覆盖文件
 5. 订阅自带 `rules` 进入 `sub-rules.rules_<entry>`，并让该端口 listener 绑定 `rule: rules_<entry>`；规则里的策略字段（`no-resolve` 前一位）会被改写，没有 `MATCH` 时自动补 `MATCH,DIRECT`
 
-> 前缀规则：**组名用入口名，节点名用来源名 `ns`**。交互生成配置时入口名与来源名相同，所以多数情况下看起来一样。
+> 命名规则：**组名加入口名前缀 `entry/`，节点名默认不加前缀**。
 
 ### 使用条件与限制
 - 一个 preserve 入口只能引用**一个**来源（多个来源的分组树无法合并）
@@ -93,7 +93,7 @@
 
 - **保留**：
   - BUILTIN：`DIRECT / REJECT / PASS`
-  - 对其它 group 的引用（会被命名空间化为 `ns/<group>`）
+  - 对其它 group 的引用（会被命名空间化为 `入口名/<group>`）
 - **丢弃**：
   - 具体节点名（以及无法判定的“非 group 引用项”）
 
