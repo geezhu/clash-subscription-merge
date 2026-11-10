@@ -59,7 +59,10 @@ config/
   groups.yaml      模板分组（每个入口各一份，自动加 "入口名/" 前缀）
   rules.yaml       模板规则（自上而下，命中即停；策略写组名）
   sources.example.yaml
+  nodes.example.txt   分享链接文件示例（复制为 nodes.txt 使用）
 merge.py
+share_links.py      分享链接（vless:// 等）-> mihomo 节点的转换器
+nodes.txt          你的分享链接，一行一个（含密码，已在 .gitignore）
 sources.yaml       运行后生成，含订阅 token（已在 .gitignore）
 snippets/          自动下载或手动放置的订阅片段（已在 .gitignore）
 ```

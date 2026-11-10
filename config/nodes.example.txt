@@ -1,0 +1,8 @@
+# 分享链接文件示例：一行一个链接，# 开头为注释。复制为 nodes.txt 后使用（nodes.txt 含密码/UUID，已在 .gitignore 中）。
+# 支持：vless:// vmess:// trojan:// ss:// hysteria2:// (hy2://) tuic:// anytls://   （naive 不被 mihomo 支持，会被跳过）
+# 以下均为虚构值，仅演示格式。
+vless://11111111-2222-3333-4444-555555555555@node.example.com:443?encryption=none&security=tls&type=ws&host=node.example.com&sni=node.example.com&fp=chrome&path=%2Fabc#VLESS-WS
+vless://11111111-2222-3333-4444-555555555555@1.2.3.4:443?encryption=none&security=reality&type=tcp&sni=www.microsoft.com&fp=chrome&pbk=把这里换成Reality公钥&sid=6ba85179e30d4fc2&flow=xtls-rprx-vision#Reality-TCP
+trojan://密码@node.example.com:443?sni=node.example.com#Trojan
+hysteria2://密码@node.example.com:443?sni=node.example.com&alpn=h3#Hy2
+tuic://11111111-2222-3333-4444-555555555555:密码@node.example.com:8443?congestion_control=bbr&alpn=h3&sni=node.example.com&udp_relay_mode=quic#TUIC

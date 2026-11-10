@@ -81,7 +81,41 @@ proxies:
 
 输出时节点名保持原样（`hk`）。
 
-## 5) 节点重名怎么处理
+## 5) 用分享链接创建节点（nodes.txt）
+
+不想手写 YAML 时，把节点的**分享链接**一行一个写进 `nodes.txt`（可参考 `config/nodes.example.txt`），脚本会自动转换成 mihomo 节点：
+
+```yaml
+sources:
+  - ns: mynodes
+    url: local
+    links: nodes.txt
+```
+
+交互创建 `sources.yaml` 时，选择"本地节点"后选 **1=分享链接文件**；如果文件不存在，可以直接粘贴链接（空行结束），脚本会替你写出 `nodes.txt`。
+以后加节点只要在 `nodes.txt` 末尾追加一行，重新运行即可。一个来源也可以同时写 `snippet` 和 `links`，两者的节点会合并。
+
+| 协议 | 链接 | 已支持的传输/特性 |
+|---|---|---|
+| VLESS | `vless://` | TCP、WS、gRPC、XHTTP；TLS、Reality；`flow`（如 Vision） |
+| VMess | `vmess://`（Base64 JSON） | TCP、WS、gRPC、H2；TLS |
+| Trojan | `trojan://` | TCP、WS、gRPC |
+| Shadowsocks | `ss://` | SIP002 与旧格式；**不支持插件** |
+| Hysteria2 | `hysteria2://`、`hy2://` | 多端口（`mport`）、上下行速率、obfs |
+| TUIC | `tuic://` | `congestion_control`、`udp_relay_mode` |
+| AnyTLS | `anytls://` | |
+
+- 节点名取链接末尾 `#` 后面的名字（缺省时用 `协议-主机:端口`），重名按下面的规则处理。
+- `naive+https://` 等 mihomo 不支持的协议、格式错误的行会被**跳过并提示行号和原因**，不会让整个生成失败；提示里不含链接内容。
+- 链接里有密码/UUID：`nodes.txt` 已在 `.gitignore` 中，不要提交，也不要贴到公开的地方。
+
+**已知限制**：
+- 字段映射参考了 [mack-a/v2ray-agent](https://github.com/mack-a/v2ray-agent) 生成的链接及其输出的 Clash.Meta 片段。转换结果能通过 mihomo 的配置校验，
+  但校验**不会发现拼错的字段名**，也不能证明节点能连通，请以实际使用为准。
+- Reality 的 `pqv`（ML-DSA-65 校验）参数目前被忽略；XHTTP 等较新的传输方式需要较新的 mihomo 内核。
+- `type=http` 之类的 TCP HTTP 伪装头（`headerType`）不会被转换。
+
+## 6) 节点重名怎么处理
 
 **默认不给节点加前缀**，保持订阅里的原名。重名时按下面的规则处理：
 

@@ -41,6 +41,8 @@ yaml.allow_unicode = True
 yaml.width = 4096  # never wrap long URLs
 
 HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE))  # so `share_links` is importable however the script is launched
+from share_links import parse_links_text  # noqa: E402
 BUILTINS: Set[str] = {"DIRECT", "REJECT", "PASS", "GLOBAL", "DNS"}
 PROVIDER_PLACEHOLDERS: Set[str] = {"PROVIDER", "__PROVIDER__", "{PROVIDER}", "{provider}", "${PROVIDER}"}
 LEAF = "LEAF"
@@ -60,6 +62,7 @@ class Source:
     url: str  # "local" or a subscription URL
     snippet: Optional[str] = None
     prefix: str = ""  # optional node-name prefix (default: none, keep original names)
+    links: Optional[str] = None  # local source: path of a file with share links (one per line)
 
     @property
     def is_local(self) -> bool:
@@ -86,6 +89,7 @@ class Templates:
 class SourceInfo:
     has_provider: bool
     prefix: str = ""
+    proxies: List[dict] = field(default_factory=list)  # raw local proxies (yaml snippet + share links)
     local_names: List[str] = field(default_factory=list)
     name_map: Dict[str, str] = field(default_factory=dict)  # snippet node name -> final node name
     snippet: Optional[dict] = None
@@ -258,6 +262,42 @@ def prompt_profile() -> str:
         print("请输入 1 或 2")
 
 
+def prompt_local_kind() -> str:
+    while True:
+        s = input("本地节点的来源 [1=分享链接文件(nodes.txt，推荐) 2=已有 YAML 片段] (默认 1): ").strip()
+        if s in {"", "1"}:
+            return "links"
+        if s == "2":
+            return "yaml"
+        print("请输入 1 或 2")
+
+
+def prompt_links_file() -> str:
+    """Ask for a share-link file; if it does not exist, let the user paste links and create it."""
+    path = input("分享链接文件路径 (默认 nodes.txt): ").strip() or "nodes.txt"
+    p = Path(path).expanduser()
+    if p.exists():
+        return path
+    print(f"{p} 不存在。请粘贴分享链接（vless:// vmess:// trojan:// ss:// hysteria2:// tuic:// anytls://），一行一个，空行结束：")
+    lines: List[str] = []
+    while True:
+        try:
+            line = input().strip()
+        except EOFError:
+            break
+        if not line:
+            break
+        lines.append(line)
+    if not lines:
+        raise ValueError("没有输入任何分享链接")
+    _, problems = parse_links_text("\n".join(lines))
+    for no, msg in problems:
+        print(f"[警告] 第 {no} 行无法识别，将被忽略 - {msg}")
+    p.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    print(f"[信息] 已写入 {p}（含密码/UUID，已在 .gitignore 中，请勿提交）")
+    return path
+
+
 def prompt_sources_interactive() -> Tuple[List[Source], List[Entry]]:
     n = prompt_int("要添加多少个订阅/节点来源？: ", 1, 50)
     sources: List[Source] = []
@@ -266,13 +306,19 @@ def prompt_sources_interactive() -> Tuple[List[Source], List[Entry]]:
         print(f"\n--- 第 {i + 1} 个 ---")
         ns = sanitize_name(prompt_nonempty("名字(用于命名空间/Provider名): "), "订阅名字")
         url = prompt_nonempty("订阅链接(填 local 表示本地节点): ")
+        snippet: Optional[str] = None
+        links: Optional[str] = None
         if url.strip().lower() == "local":
-            snippet = prompt_nonempty("本地节点 YAML 路径(含 proxies): ")
+            if prompt_local_kind() == "links":
+                links = prompt_links_file()
+            else:
+                snippet = prompt_nonempty("本地节点 YAML 路径(含 proxies): ")
         else:
             snippet = input(f"片段路径(留空=需要时自动下载到 snippets/{ns}.yaml): ").strip() or None
         port = prompt_int("该来源的独立端口: ")
-        profile = prompt_profile()
-        sources.append(Source(ns=ns, url=url.strip(), snippet=snippet))
+        # 只有分享链接的来源没有分组/规则，只能用模板
+        profile = "template" if (links and not snippet) else prompt_profile()
+        sources.append(Source(ns=ns, url=url.strip(), snippet=snippet, links=links))
         entries.append(Entry(name=ns, port=port, sources=[ns], profile=profile))
 
     if prompt_yes_no("\n是否添加汇总入口 ALL（包含全部来源，同时作为默认入口）？", True):
@@ -307,8 +353,8 @@ def check_structure(sources: List[Source], entries: List[Entry]) -> None:
         if e.profile == "preserve" and len(e.sources) != 1:
             raise ValueError(f"入口 {e.name}: preserve 模式只能引用一个 source")
     for s in sources:
-        if s.is_local and not s.snippet:
-            raise ValueError(f"source {s.ns} 是 local，必须提供 snippet")
+        if s.is_local and not (s.snippet or s.links):
+            raise ValueError(f"source {s.ns} 是 local，必须提供 snippet 或 links")
     defaults = [e for e in entries if e.default]
     if len(defaults) > 1:
         raise ValueError("只能有一个 default 入口")
@@ -322,7 +368,7 @@ def load_sources(path: Path) -> Tuple[List[Source], List[Entry]]:
         raise ValueError(f"{path} 顶层必须是 key:value")
     sources = [
         Source(ns=sanitize_name(s["ns"], "ns"), url=str(s["url"]).strip(), snippet=s.get("snippet"),
-               prefix=str(s.get("prefix") or ""))
+               prefix=str(s.get("prefix") or ""), links=s.get("links"))
         for s in data.get("sources") or []
     ]
     entries = [
@@ -358,7 +404,7 @@ def save_sources(path: Path, sources: List[Source], entries: List[Entry], ua: Op
         **({"ua": ua} if ua else {}),
         "sources": [
             {k: v for k, v in (("ns", s.ns), ("url", s.url), ("snippet", s.snippet),
-                               ("prefix", s.prefix or None)) if v is not None}
+                               ("prefix", s.prefix or None), ("links", s.links)) if v is not None}
             for s in sources
         ],
         "entries": [
@@ -457,6 +503,18 @@ def probe_ua(timeout: int = 180) -> Optional[str]:
     else:
         print("[探测] 没有收到请求，将使用默认 UA")
     return ua
+
+
+def read_links_file(path: str, ns: str) -> List[dict]:
+    """Convert a file of share links (one per line) into mihomo proxies. Bad lines are skipped with a warning."""
+    p = Path(path).expanduser()
+    if not p.exists():
+        raise FileNotFoundError(f"找不到分享链接文件: {p}")
+    proxies, problems = parse_links_text(p.read_text(encoding="utf-8"))
+    for no, msg in problems:  # message never contains the link itself
+        print(f"[警告] {p.name} 第 {no} 行已跳过 - {msg}")
+    print(f"[信息] 来源 {ns}: 从 {p.name} 解析出 {len(proxies)} 个节点")
+    return proxies
 
 
 def redact_urls(text: str) -> str:
@@ -832,18 +890,25 @@ def build_config(
             if src.prefix:  # no prefix by default: keep the subscription's original node names
                 provider["override"] = {"additional-prefix": src.prefix}
             cfg["proxy-providers"][ns] = provider
-        if src.is_local or ns in preserve_ns:
+        if src.is_local:
+            if src.snippet:
+                snippet = load_yaml_file(src.snippet)
+                if not isinstance(snippet, dict):
+                    raise ValueError(f"{src.snippet} 不是 YAML dict")
+                info.snippet = snippet
+                info.proxies += [p for p in snippet.get("proxies") or [] if isinstance(p, dict)]
+            if src.links:
+                info.proxies += read_links_file(src.links, ns)
+        elif ns in preserve_ns:
             path = Path(src.snippet or f"snippets/{ns}.yaml")
-            if not src.is_local:
-                fetch_snippet(src, path, refresh, ua)
+            fetch_snippet(src, path, refresh, ua)
             snippet = load_yaml_file(path)
             if not isinstance(snippet, dict):
                 raise ValueError(f"{path} 不是 YAML dict")
             info.snippet = snippet
-            if not src.is_local:
-                for p in snippet.get("proxies") or []:
-                    if isinstance(p, dict) and isinstance(p.get("name"), str) and p["name"]:
-                        info.name_map[p["name"]] = f"{src.prefix}{p['name']}"
+            for p in snippet.get("proxies") or []:
+                if isinstance(p, dict) and isinstance(p.get("name"), str) and p["name"]:
+                    info.name_map[p["name"]] = f"{src.prefix}{p['name']}"
         infos[ns] = info
 
     # 1b) local nodes keep their names; a local node is renamed only when it clashes with an
@@ -856,7 +921,7 @@ def build_config(
         if not src.is_local:
             continue
         info = infos[ns]
-        for p in (info.snippet or {}).get("proxies") or []:
+        for p in info.proxies:
             if not (isinstance(p, dict) and isinstance(p.get("name"), str) and p["name"]):
                 continue
             orig = p["name"]

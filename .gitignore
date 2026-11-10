@@ -8,3 +8,6 @@ sources.yaml.bak
 snippets/
 rules/
 __pycache__/
+
+# 分享链接文件（含密码/UUID，请勿提交）
+nodes.txt
