@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+import json
 import re
 import shutil
 import sys
@@ -780,6 +781,7 @@ def build_config(
     #     already-known node (known remote names, or an earlier local node). Remote-vs-remote
     #     clashes are not handled (and, for template mode, cannot be seen before mihomo fetches).
     taken: Set[str] = {n for i in infos.values() if i.has_provider for n in i.name_map.values()}
+    seen: Dict[Tuple[str, str], str] = {}  # (wanted name, content) -> final name; identical local nodes merge
     for ns in used_ns:
         src = src_by_ns[ns]
         if not src.is_local:
@@ -790,11 +792,19 @@ def build_config(
                 continue
             orig = p["name"]
             name = f"{src.prefix}{orig}"
+            content = json.dumps({k: v for k, v in p.items() if k != "name"}, sort_keys=True, default=str)
+            if (name, content) in seen:  # same name and same content as an earlier local node: keep one copy
+                final = seen[(name, content)]
+                if final not in info.local_names:
+                    info.local_names.append(final)
+                info.name_map[orig] = final
+                continue
             if name in taken:
                 new = unique_name(name, ns, taken)
                 print(f"[提示] 本地节点 {name} 与已有节点重名，已重命名为 {new}")
                 name = new
             taken.add(name)
+            seen[(f"{src.prefix}{orig}", content)] = name
             p2 = dict(p)
             p2["name"] = name
             cfg["proxies"].append(p2)
