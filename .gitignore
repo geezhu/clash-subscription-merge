@@ -1,0 +1,10 @@
+.idea/
+.venv/
+*.7z
+mihomo_out/
+merged.yaml
+sources.yaml
+sources.yaml.bak
+snippets/
+rules/
+__pycache__/

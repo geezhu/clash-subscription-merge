@@ -1,0 +1,21 @@
+# 模板规则：自上而下匹配，命中即停。
+# 原则：范围小、更具体的放前面；范围大的（如 Google 含 DOMAIN-KEYWORD,google）放后面。
+# 策略写 groups.yaml 里的组名，py 会自动加前缀。
+rules:
+  - RULE-SET,LocalAreaNetwork,🎯 全球直连
+  - RULE-SET,BanAD,🛑 广告拦截
+  - RULE-SET,BanProgramAD,🛑 广告拦截
+  - RULE-SET,Gemini,🔍 Google
+  - RULE-SET,Google,🔍 Google
+  - RULE-SET,AI,🤖 AI服务
+  - RULE-SET,GoogleCN,🎯 全球直连
+  - RULE-SET,SteamCN,🎯 全球直连
+  - RULE-SET,Microsoft,🚀 节点选择
+  - RULE-SET,Apple,🚀 节点选择
+  - RULE-SET,ProxyMedia,🚀 节点选择
+  - RULE-SET,Telegram,🚀 节点选择
+  - RULE-SET,ProxyLite,🚀 节点选择
+  - RULE-SET,ChinaDomain,🎯 全球直连
+  - RULE-SET,ChinaCompanyIp,🎯 全球直连
+  - GEOIP,CN,🎯 全球直连
+  - MATCH,🐟 漏网之鱼

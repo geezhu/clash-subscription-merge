@@ -1,0 +1,25 @@
+# 规则集：只在这里声明一次。
+# 默认值：type=http, behavior=classical, format=text, path=./rules/<名字>.yaml
+# 只有被 rules.yaml 引用的规则集才会写进输出（未引用的会给出警告）。
+defaults:
+  type: http
+  behavior: classical
+  format: text
+  interval: 86400
+
+rulesets:
+  LocalAreaNetwork: https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/master/Clash/LocalAreaNetwork.list
+  BanAD:            https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/master/Clash/BanAD.list
+  BanProgramAD:     https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/master/Clash/BanProgramAD.list
+  Gemini:           https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/master/Clash/Ruleset/Gemini.list
+  Google:           https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/master/Clash/Ruleset/Google.list
+  AI:               https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/master/Clash/Ruleset/AI.list
+  GoogleCN:         https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/master/Clash/GoogleCN.list
+  SteamCN:          https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/master/Clash/Ruleset/SteamCN.list
+  Microsoft:        https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/master/Clash/Microsoft.list
+  Apple:            https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/master/Clash/Apple.list
+  ProxyMedia:       https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/master/Clash/ProxyMedia.list
+  Telegram:         https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/master/Clash/Telegram.list
+  ProxyLite:        https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/master/Clash/ProxyLite.list
+  ChinaDomain:      https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/master/Clash/ChinaDomain.list
+  ChinaCompanyIp:   https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/master/Clash/ChinaCompanyIp.list

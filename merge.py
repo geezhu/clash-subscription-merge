@@ -1,27 +1,22 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Build a single mihomo/Clash config from multiple "sources" using an interactive CLI.
+Build one mihomo/Clash config that exposes several local ports, each bound to its own
+groups/rules.
 
-Each source requires:
-- ns (subscription name / namespace / provider name)
-- port (listener port)
-- url (subscription URL; use "local" to indicate a local-only snippet, no proxy-providers)
-- snippet yaml path (a local yaml file containing at least: proxy-groups + rules
-  optional: rule-providers, proxies)
+Data lives in config/ (see README):
+    base.yaml       dns / tun / controller ...   ("{DEFAULT}" is replaced by the default entry name)
+    rulesets.yaml   rule-provider declarations (declared once)
+    groups.yaml     template proxy-groups (one copy per entry; "LEAF" = all nodes of the entry)
+    rules.yaml      template rules (policy = group name, prefixed automatically)
+User input lives in sources.yaml (generated interactively if missing, reused on request):
+    sources:  ns / url (or "local") / snippet
+    entries:  name / port / sources[] / profile (template | preserve) / default
 
-Core behavior:
-- Non-local sources: create proxy-providers.<ns> with override.additional-prefix "<ns>/"
-- Merge proxy-groups from snippets with namespace prefix "<ns>/"
-- Leaf groups (no references to other groups) rewrite nodes list into use:[ns] + filter exact match
-- Non-leaf groups remove all node names; keep only BUILTIN (DIRECT/REJECT/PASS/...) + group references
-  and auto-fill with DIRECT if nothing meaningful remains
-- Put snippet rules into sub-rules.rules_<ns> and bind listener.rule to that sub-rule set
-- Namespace rule-providers keys as "<ns>__<name>" and rewrite RULE-SET references accordingly
-- Rewrite rule policy field (last or second-last if "no-resolve") if it matches group/proxy names
+A group can mix remote subscriptions (written to `use`) and local nodes (written to `proxies`).
 
 Dependencies:
-    pip install ruamel.yaml
+    pip install ruamel.yaml requests
 """
 
 from __future__ import annotations
@@ -29,264 +24,26 @@ from __future__ import annotations
 import argparse
 import copy
 import re
+import shutil
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Set
-
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from ruamel.yaml import YAML
 
 yaml = YAML()
 yaml.preserve_quotes = True
 yaml.allow_unicode = True
+yaml.width = 4096  # never wrap long URLs
 
+HERE = Path(__file__).resolve().parent
 BUILTINS: Set[str] = {"DIRECT", "REJECT", "PASS", "GLOBAL", "DNS"}
 PROVIDER_PLACEHOLDERS: Set[str] = {"PROVIDER", "__PROVIDER__", "{PROVIDER}", "{provider}", "${PROVIDER}"}
-LEAF_PLACEHOLDER = "LEAF"
-LEAF_PLACEHOLDERS: Set[str] = {LEAF_PLACEHOLDER}
-
-# Default base config used when --base is not provided.
-DEFAULT_BASE_CONFIG: Dict[str, Any] = {
-    "mode": "rule",
-    "log-level": "info",
-    "ipv6": False,
-    "external-controller": "0.0.0.0:9090",
-    "dns": {
-        "enable": True,
-        "listen": "0.0.0.0:53",
-        "ipv6": False,
-        "default-nameserver": [
-            "223.5.5.5",
-            "114.114.114.114",
-        ],
-        "nameserver": [
-            "223.5.5.5",
-            "114.114.114.114",
-            "119.29.29.29",
-            "180.76.76.76",
-        ],
-        "enhanced-mode": "fake-ip",
-        "fake-ip-range": "198.18.0.1/16",
-        "fake-ip-filter": [
-            "*.lan",
-            "*.localdomain",
-            "*.example",
-            "*.invalid",
-            "*.localhost",
-            "*.test",
-            "*.local",
-            "*.home.arpa",
-            "router.asus.com",
-            "localhost.sec.qq.com",
-            "localhost.ptlogin2.qq.com",
-            "+.msftconnecttest.com",
-        ],
-    },
-    "tun": {
-        "enable": True,
-        "stack": "system",
-        "auto-route": True,
-        "auto-detect-interface": True,
-        "dns-hijack": [
-            "114.114.114.114",
-            "180.76.76.76",
-            "119.29.29.29",
-            "223.5.5.5",
-            "8.8.8.8",
-            "8.8.4.4",
-            "1.1.1.1",
-            "1.0.0.1",
-        ],
-    },
-}
-
-TEMPLATE_LEAF_GROUPS: Set[str] = {"🚀 节点选择", "♻️ 自动选择"}
-TEMPLATE_GROUPS: List[Dict[str, Any]] = [
-    {
-        "name": "🚀 节点选择",
-        "type": "select",
-        "proxies": [
-            "♻️ 自动选择",
-            "DIRECT",
-            "LEAF",
-        ],
-    },
-    {
-        "name": "♻️ 自动选择",
-        "type": "url-test",
-        "proxies": [
-            "LEAF",
-        ],
-        "url": "http://www.gstatic.com/generate_204",
-        "interval": 300,
-        "tolerance": 50,
-    },
-    {
-        "name": "🌍 国外媒体",
-        "type": "select",
-        "proxies": [
-            "🚀 节点选择",
-            "♻️ 自动选择",
-            "🎯 全球直连",
-            "LEAF",
-        ],
-    },
-    {
-        "name": "📲 电报信息",
-        "type": "select",
-        "proxies": [
-            "🚀 节点选择",
-            "🎯 全球直连",
-            "LEAF",
-        ],
-    },
-    {
-        "name": "Ⓜ️ 微软服务",
-        "type": "select",
-        "proxies": [
-            "🎯 全球直连",
-            "🚀 节点选择",
-            "LEAF",
-        ],
-    },
-    {
-        "name": "🍎 苹果服务",
-        "type": "select",
-        "proxies": [
-            "🚀 节点选择",
-            "🎯 全球直连",
-            "LEAF",
-        ],
-    },
-    {
-        "name": "🎯 全球直连",
-        "type": "select",
-        "proxies": [
-            "DIRECT",
-            "🚀 节点选择",
-            "♻️ 自动选择",
-        ],
-    },
-    {
-        "name": "🛑 全球拦截",
-        "type": "select",
-        "proxies": [
-            "REJECT",
-            "DIRECT",
-        ],
-    },
-    {
-        "name": "🍃 应用净化",
-        "type": "select",
-        "proxies": [
-            "REJECT",
-            "DIRECT",
-        ],
-    },
-    {
-        "name": "🐟 漏网之鱼",
-        "type": "select",
-        "proxies": [
-            "🚀 节点选择",
-            "🎯 全球直连",
-            "♻️ 自动选择",
-            "LEAF",
-        ],
-    },
-]
-TEMPLATE_RULE_PROVIDERS: Dict[str, Any] = {
-    "LocalAreaNetwork": {
-        "type": "http",
-        "behavior": "classical",
-        "url": "https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/refs/heads/master/Clash/LocalAreaNetwork.list",
-        "path": "./rules/LocalAreaNetwork.yaml",
-    },
-    "BanAD": {
-        "type": "http",
-        "behavior": "classical",
-        "url": "https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/refs/heads/master/Clash/BanAD.list",
-        "path": "./rules/BanAD.yaml",
-    },
-    "BanProgramAD": {
-        "type": "http",
-        "behavior": "classical",
-        "url": "https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/refs/heads/master/Clash/BanProgramAD.list",
-        "path": "./rules/BanProgramAD.yaml",
-    },
-    "GoogleCN": {
-        "type": "http",
-        "behavior": "classical",
-        "url": "https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/refs/heads/master/Clash/GoogleCN.list",
-        "path": "./rules/GoogleCN.yaml",
-    },
-    "SteamCN": {
-        "type": "http",
-        "behavior": "classical",
-        "url": "https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/refs/heads/master/Clash/Ruleset/SteamCN.list",
-        "path": "./rules/SteamCN.yaml",
-    },
-    "Microsoft": {
-        "type": "http",
-        "behavior": "classical",
-        "url": "https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/refs/heads/master/Clash/Microsoft.list",
-        "path": "./rules/Microsoft.yaml",
-    },
-    "Apple": {
-        "type": "http",
-        "behavior": "classical",
-        "url": "https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/refs/heads/master/Clash/Apple.list",
-        "path": "./rules/Apple.yaml",
-    },
-    "ProxyMedia": {
-        "type": "http",
-        "behavior": "classical",
-        "url": "https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/refs/heads/master/Clash/ProxyMedia.list",
-        "path": "./rules/ProxyMedia.yaml",
-    },
-    "Telegram": {
-        "type": "http",
-        "behavior": "classical",
-        "url": "https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/refs/heads/master/Clash/Telegram.list",
-        "path": "./rules/Telegram.yaml",
-    },
-    "ProxyLite": {
-        "type": "http",
-        "behavior": "classical",
-        "url": "https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/refs/heads/master/Clash/ProxyLite.list",
-        "path": "./rules/ProxyLite.yaml",
-    },
-    "ChinaDomain": {
-        "type": "http",
-        "behavior": "classical",
-        "url": "https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/refs/heads/master/Clash/ChinaDomain.list",
-        "path": "./rules/ChinaDomain.yaml",
-    },
-    "ChinaCompanyIp": {
-        "type": "http",
-        "behavior": "classical",
-        "url": "https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/refs/heads/master/Clash/ChinaCompanyIp.list",
-        "path": "./rules/ChinaCompanyIp.yaml",
-    },
-}
-TEMPLATE_RULES: List[str] = [
-    "RULE-SET,LocalAreaNetwork,🎯 全球直连",
-    "RULE-SET,BanAD,🛑 全球拦截",
-    "RULE-SET,BanProgramAD,🍃 应用净化",
-    "RULE-SET,GoogleCN,🎯 全球直连",
-    "RULE-SET,SteamCN,🎯 全球直连",
-    "RULE-SET,Microsoft,Ⓜ️ 微软服务",
-    "RULE-SET,Apple,🍎 苹果服务",
-    "RULE-SET,ProxyMedia,🌍 国外媒体",
-    "RULE-SET,Telegram,📲 电报信息",
-    "RULE-SET,ProxyLite,🚀 节点选择",
-    "RULE-SET,ChinaDomain,🎯 全球直连",
-    "RULE-SET,ChinaCompanyIp,🎯 全球直连",
-    "GEOIP,CN,🎯 全球直连",
-    "MATCH,🐟 漏网之鱼",
-]
-
-
+LEAF = "LEAF"
+DEFAULT_PLACEHOLDER = "{DEFAULT}"
+PROFILES = ("template", "preserve")
+SNIPPET_UA = "clash.meta"
 
 
 # -----------------------------
@@ -295,26 +52,152 @@ TEMPLATE_RULES: List[str] = [
 @dataclass
 class Source:
     ns: str
+    url: str  # "local" or a subscription URL
+    snippet: Optional[str] = None
+
+    @property
+    def is_local(self) -> bool:
+        return self.url.strip().lower() == "local"
+
+
+@dataclass
+class Entry:
+    name: str
     port: int
-    url: str  # "local" or a real subscription URL
-    yaml_path: str
+    sources: List[str]
+    profile: str = "template"
+    default: bool = False
+
+
+@dataclass
+class Templates:
+    groups: List[dict]
+    rules: List[str]
+    rulesets: Dict[str, dict]
+
+
+@dataclass
+class SourceInfo:
+    has_provider: bool
+    local_names: List[str] = field(default_factory=list)
+    snippet: Optional[dict] = None
 
 
 @dataclass
 class Maps:
-    group_map: Dict[str, str]     # raw group name -> ns/group
-    proxy_map: Dict[str, str]     # raw proxy name -> ns/proxy (only for local proxies)
-    ruleset_map: Dict[str, str]   # raw rule-provider key -> ns__key
+    group_map: Dict[str, str]    # raw group name -> prefixed group name
+    proxy_map: Dict[str, str]    # raw local proxy name -> ns/proxy
+    ruleset_map: Dict[str, str]  # raw rule-provider key -> prefixed key
 
 
 # -----------------------------
-# Helpers
+# Generic helpers
+# -----------------------------
+def plain(x: Any) -> Any:
+    """Convert ruamel containers/scalars into plain python objects."""
+    if isinstance(x, dict):
+        return {str(k): plain(v) for k, v in x.items()}
+    if isinstance(x, list):
+        return [plain(v) for v in x]
+    if isinstance(x, str):
+        return str(x)
+    return x
+
+
+def load_yaml_file(path: Path | str) -> Any:
+    p = Path(path).expanduser().resolve()
+    if not p.exists():
+        raise FileNotFoundError(f"找不到文件: {p}")
+    return plain(yaml.load(p.read_text(encoding="utf-8")))
+
+
+def dump_yaml_file(data: Any, path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as f:
+        yaml.dump(data, f)
+
+
+def dedup(items: List[Any]) -> List[Any]:
+    seen: set = set()
+    out: List[Any] = []
+    for it in items:
+        key = it if isinstance(it, str) else id(it)
+        if key not in seen:
+            out.append(it)
+            seen.add(key)
+    return out
+
+
+def sanitize_name(name: str, what: str = "名字") -> str:
+    name = str(name).strip().replace("/", "_")
+    if not name:
+        raise ValueError(f"{what}不能为空")
+    return name
+
+
+def substitute(x: Any, old: str, new: str) -> Any:
+    if isinstance(x, dict):
+        return {k: substitute(v, old, new) for k, v in x.items()}
+    if isinstance(x, list):
+        return [substitute(v, old, new) for v in x]
+    if isinstance(x, str):
+        return x.replace(old, new)
+    return x
+
+
+def split_top_level_commas(line: str) -> List[str]:
+    """Split a rule line on top-level commas only (AND/OR payloads keep their inner commas)."""
+    parts: List[str] = []
+    buf: List[str] = []
+    depth = 0
+    in_s = in_d = esc = False
+    for ch in line:
+        if esc:
+            buf.append(ch)
+            esc = False
+            continue
+        if ch == "\\":
+            buf.append(ch)
+            esc = True
+            continue
+        if ch == "'" and not in_d:
+            in_s = not in_s
+            buf.append(ch)
+            continue
+        if ch == '"' and not in_s:
+            in_d = not in_d
+            buf.append(ch)
+            continue
+        if not in_s and not in_d:
+            if ch == "(":
+                depth += 1
+            elif ch == ")":
+                depth = max(0, depth - 1)
+            elif ch == "," and depth == 0:
+                parts.append("".join(buf).strip())
+                buf = []
+                continue
+        buf.append(ch)
+    parts.append("".join(buf).strip())
+    return parts
+
+
+def policy_index(parts: List[str]) -> int:
+    """Index of the policy field: last, or second-last when followed by no-resolve."""
+    if parts[-1].strip() == "no-resolve" and len(parts) >= 3:
+        return -2
+    return -1
+
+
+def regex_union_exact(names: List[str]) -> str:
+    escaped = [re.escape(n) for n in names]
+    return r"^(?:%s)$" % "|".join(escaped) if escaped else r"^$"
+
+
+# -----------------------------
+# Prompts
 # -----------------------------
 def prompt_yes_no(prompt: str, default: bool = True) -> bool:
-    """
-    y/yes -> True, n/no -> False.
-    Enter -> default.
-    """
     suffix = " (Y/n): " if default else " (y/N): "
     while True:
         s = input(prompt + suffix).strip().lower()
@@ -325,115 +208,6 @@ def prompt_yes_no(prompt: str, default: bool = True) -> bool:
         if s in {"n", "no"}:
             return False
         print("请输入 y 或 n")
-
-
-def load_template_parts() -> tuple[list[dict], list[Any], dict]:
-    return (
-        copy.deepcopy(TEMPLATE_GROUPS),
-        copy.deepcopy(TEMPLATE_RULES),
-        copy.deepcopy(TEMPLATE_RULE_PROVIDERS),
-    )
-
-
-def merge_rule_providers(dst: dict, src: dict) -> None:
-    if not isinstance(dst, dict):
-        raise TypeError('cfg["rule-providers"] must be a dict')
-    for k, v in src.items():
-        if k not in dst:
-            dst[k] = v
-
-
-def _dedup_str_list(items: list[str]) -> list[str]:
-    seen: set[str] = set()
-    out: list[str] = []
-    for item in items:
-        if item not in seen:
-            out.append(item)
-            seen.add(item)
-    return out
-
-
-def _builtin_list_from_proxies(proxies: list[Any]) -> list[str]:
-    builtins: list[str] = []
-    for item in proxies:
-        if isinstance(item, str) and item in BUILTINS:
-            builtins.append(item)
-    return _dedup_str_list(builtins)
-
-
-def _analyze_group_proxies(
-    proxies: list[Any],
-    group_names: set[str],
-) -> tuple[list[str], list[str], bool]:
-    builtins: list[str] = []
-    group_refs: list[str] = []
-    needs_leaf = False
-    for item in proxies:
-        if not isinstance(item, str):
-            continue
-        if item in LEAF_PLACEHOLDERS:
-            needs_leaf = True
-            continue
-        if item in BUILTINS:
-            builtins.append(item)
-        elif item in group_names:
-            group_refs.append(item)
-        else:
-            needs_leaf = True
-    return _dedup_str_list(builtins), _dedup_str_list(group_refs), needs_leaf
-
-
-def build_template_maps(
-    template_groups: list[dict],
-    template_rule_providers: dict,
-    ns: str,
-) -> Maps:
-    group_map: Dict[str, str] = {}
-    for g in template_groups:
-        if isinstance(g, dict) and isinstance(g.get("name"), str) and g["name"]:
-            group_map[g["name"]] = f"{ns}/{g['name']}"
-
-    ruleset_map: Dict[str, str] = {}
-    if isinstance(template_rule_providers, dict):
-        for k in template_rule_providers.keys():
-            ruleset_map[k] = f"{ns}__{k}"
-
-    return Maps(group_map=group_map, proxy_map={}, ruleset_map=ruleset_map)
-
-
-def sanitize_ns(ns: str) -> str:
-    ns = ns.strip().replace("/", "_")
-    if not ns:
-        raise ValueError("订阅名字不能为空")
-    return ns
-
-
-def deep_merge(dst: Any, src: Any) -> Any:
-    """Recursively merge dictionaries; append lists; overwrite scalars."""
-    if isinstance(dst, dict) and isinstance(src, dict):
-        for k, v in src.items():
-            if k in dst:
-                dst[k] = deep_merge(dst[k], v)
-            else:
-                dst[k] = v
-        return dst
-    if isinstance(dst, list) and isinstance(src, list):
-        dst.extend(src)
-        return dst
-    return src
-
-
-def load_yaml_file(path: str) -> Any:
-    p = Path(path).expanduser().resolve()
-    if not p.exists():
-        raise FileNotFoundError(f"找不到文件: {p}")
-    return yaml.load(p.read_text(encoding="utf-8"))
-
-
-def ensure_list(x: Any) -> List[Any]:
-    if x is None:
-        return []
-    return x if isinstance(x, list) else [x]
 
 
 def prompt_int(prompt: str, min_v: int = 1, max_v: int = 65535) -> int:
@@ -456,125 +230,211 @@ def prompt_nonempty(prompt: str) -> str:
         print("不能为空")
 
 
-def prompt_sources() -> List[Source]:
-    n = prompt_int("要合并多少个订阅/片段？: ", 1, 50)
-    out: List[Source] = []
+def prompt_profile() -> str:
+    while True:
+        s = input("分组/规则模式 [1=模板(推荐) 2=保留订阅原分组/规则] (默认 1): ").strip()
+        if s in {"", "1"}:
+            return "template"
+        if s == "2":
+            return "preserve"
+        print("请输入 1 或 2")
+
+
+def prompt_sources_interactive() -> Tuple[List[Source], List[Entry]]:
+    n = prompt_int("要添加多少个订阅/节点来源？: ", 1, 50)
+    sources: List[Source] = []
+    entries: List[Entry] = []
     for i in range(n):
         print(f"\n--- 第 {i + 1} 个 ---")
-        ns = sanitize_ns(prompt_nonempty("订阅名字(用于命名空间/Provider名): "))
-        port = prompt_int("端口(和默认的三个端口重复可能无法使用): ", 1, 65535)
-        url = prompt_nonempty("订阅链接(填 local 表示本地，无需 proxy-providers): ")
-        yaml_path = prompt_nonempty("对应的 YAML 片段路径(至少包含 proxy-groups + rules): ")
-        out.append(Source(ns=ns, port=port, url=url, yaml_path=yaml_path))
-    return out
+        ns = sanitize_name(prompt_nonempty("名字(用于命名空间/Provider名): "), "订阅名字")
+        url = prompt_nonempty("订阅链接(填 local 表示本地节点): ")
+        if url.strip().lower() == "local":
+            snippet = prompt_nonempty("本地节点 YAML 路径(含 proxies): ")
+        else:
+            snippet = input(f"片段路径(留空=需要时自动下载到 snippets/{ns}.yaml): ").strip() or None
+        port = prompt_int("该来源的独立端口: ")
+        profile = prompt_profile()
+        sources.append(Source(ns=ns, url=url.strip(), snippet=snippet))
+        entries.append(Entry(name=ns, port=port, sources=[ns], profile=profile))
 
-
-def split_top_level_commas(line: str) -> List[str]:
-    """
-    Split a rule line by commas, but only at "top-level" commas.
-    Avoid breaking AND/OR payloads like: AND,((IN-PORT,10001),(DOMAIN,...)),POLICY
-    """
-    parts: List[str] = []
-    buf: List[str] = []
-    depth = 0
-    in_s = False
-    in_d = False
-    esc = False
-
-    for ch in line:
-        if esc:
-            buf.append(ch)
-            esc = False
-            continue
-        if ch == "\\":
-            buf.append(ch)
-            esc = True
-            continue
-
-        if ch == "'" and not in_d:
-            in_s = not in_s
-            buf.append(ch)
-            continue
-        if ch == '"' and not in_s:
-            in_d = not in_d
-            buf.append(ch)
-            continue
-
-        if not in_s and not in_d:
-            if ch == "(":
-                depth += 1
-            elif ch == ")":
-                depth = max(0, depth - 1)
-            elif ch == "," and depth == 0:
-                parts.append("".join(buf).strip())
-                buf = []
-                continue
-
-        buf.append(ch)
-
-    parts.append("".join(buf).strip())
-    return parts
-
-
-def regex_union_exact(names: List[str]) -> str:
-    """Build ^(?:a|b|c)$ exact-match regex."""
-    escaped = [re.escape(n) for n in names]
-    return r"^(?:%s)$" % "|".join(escaped) if escaped else r"^$"
+    if prompt_yes_no("\n是否添加汇总入口 ALL（包含全部来源，同时作为默认入口）？", True):
+        port = prompt_int("ALL 端口: ")
+        entries.append(Entry(name="ALL", port=port, sources=[s.ns for s in sources],
+                             profile="template", default=True))
+    else:
+        entries[0].default = True
+    return sources, entries
 
 
 # -----------------------------
-# Transform logic
+# sources.yaml
 # -----------------------------
-def build_maps(snippet: Dict[str, Any], ns: str) -> Maps:
-    groups = snippet.get("proxy-groups") or []
-    proxies = snippet.get("proxies") or []
+def check_structure(sources: List[Source], entries: List[Entry]) -> None:
+    ns_set = [s.ns for s in sources]
+    if len(set(ns_set)) != len(ns_set):
+        raise ValueError("sources 里有重复的 ns")
+    names = [e.name for e in entries]
+    if len(set(names)) != len(names):
+        raise ValueError("entries 里有重复的 name")
+    if not entries:
+        raise ValueError("entries 不能为空")
+    for e in entries:
+        if e.profile not in PROFILES:
+            raise ValueError(f"入口 {e.name} 的 profile 必须是 {PROFILES}")
+        if not e.sources:
+            raise ValueError(f"入口 {e.name} 没有引用任何 source")
+        for ns in e.sources:
+            if ns not in ns_set:
+                raise ValueError(f"入口 {e.name} 引用了不存在的 source: {ns}")
+        if e.profile == "preserve" and len(e.sources) != 1:
+            raise ValueError(f"入口 {e.name}: preserve 模式只能引用一个 source")
+    for s in sources:
+        if s.is_local and not s.snippet:
+            raise ValueError(f"source {s.ns} 是 local，必须提供 snippet")
+    defaults = [e for e in entries if e.default]
+    if len(defaults) > 1:
+        raise ValueError("只能有一个 default 入口")
+    if not defaults:
+        entries[0].default = True
+
+
+def load_sources(path: Path) -> Tuple[List[Source], List[Entry]]:
+    data = load_yaml_file(path)
+    if not isinstance(data, dict):
+        raise ValueError(f"{path} 顶层必须是 key:value")
+    sources = [
+        Source(ns=sanitize_name(s["ns"], "ns"), url=str(s["url"]).strip(), snippet=s.get("snippet"))
+        for s in data.get("sources") or []
+    ]
+    entries = [
+        Entry(
+            name=sanitize_name(e["name"], "入口名"),
+            port=int(e["port"]),
+            sources=[str(x) for x in e.get("sources") or []],
+            profile=str(e.get("profile", "template")),
+            default=bool(e.get("default", False)),
+        )
+        for e in data.get("entries") or []
+    ]
+    check_structure(sources, entries)
+    return sources, entries
+
+
+def save_sources(path: Path, sources: List[Source], entries: List[Entry]) -> None:
+    if path.exists():
+        shutil.copyfile(path, path.with_name(path.name + ".bak"))
+    data = {
+        "sources": [
+            {k: v for k, v in (("ns", s.ns), ("url", s.url), ("snippet", s.snippet)) if v is not None}
+            for s in sources
+        ],
+        "entries": [
+            {"name": e.name, "port": e.port, "sources": list(e.sources), "profile": e.profile,
+             **({"default": True} if e.default else {})}
+            for e in entries
+        ],
+    }
+    dump_yaml_file(data, path)
+
+
+def print_summary(sources: List[Source], entries: List[Entry]) -> None:
+    print("\n当前配置：")
+    for s in sources:
+        kind = "local" if s.is_local else "远程订阅"
+        print(f"  来源 {s.ns:<12} {kind}")
+    for e in entries:
+        flag = " [默认]" if e.default else ""
+        print(f"  入口 {e.name:<12} 端口 {e.port:<6} {e.profile:<9} <- {', '.join(e.sources)}{flag}")
+    print()
+
+
+# -----------------------------
+# Templates (config/*.yaml)
+# -----------------------------
+def load_templates(config_dir: Path) -> Templates:
+    rs = load_yaml_file(config_dir / "rulesets.yaml") or {}
+    defaults = rs.get("defaults") or {}
+    rulesets: Dict[str, dict] = {}
+    for name, v in (rs.get("rulesets") or {}).items():
+        spec = dict(v) if isinstance(v, dict) else {"url": v}
+        p = {**defaults, **spec}
+        p.setdefault("path", f"./rules/{name}.yaml")
+        rulesets[name] = p
+
+    groups = (load_yaml_file(config_dir / "groups.yaml") or {}).get("groups") or []
+    rules = (load_yaml_file(config_dir / "rules.yaml") or {}).get("rules") or []
+    if not groups or not rules:
+        raise ValueError("groups.yaml / rules.yaml 不能为空")
+    return Templates(groups=groups, rules=[str(r) for r in rules], rulesets=rulesets)
+
+
+# -----------------------------
+# Snippet fetching
+# -----------------------------
+def fetch_snippet(src: Source, path: Path, refresh: bool) -> None:
+    """Download a Clash YAML subscription into `path` (cache). Base64 lists are not supported."""
+    if path.exists() and not refresh:
+        return
+    try:
+        import requests
+
+        r = requests.get(src.url, headers={"User-Agent": SNIPPET_UA}, timeout=30)
+        r.raise_for_status()
+        data = yaml.load(r.text)
+        if not isinstance(data, dict) or not (data.get("proxies") or data.get("proxy-groups")):
+            raise ValueError("返回内容不是 Clash YAML（可能是 Base64/v2ray 链接列表，暂不支持）")
+    except Exception as e:  # noqa: BLE001
+        if path.exists():
+            print(f"[警告] 下载 {src.ns} 失败，使用缓存 {path}: {e}")
+            return
+        raise ValueError(f"下载订阅 {src.ns} 失败: {e}") from e
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(r.text, encoding="utf-8")
+    print(f"[信息] 已下载 {src.ns} -> {path}")
+
+
+# -----------------------------
+# preserve profile (keep the subscription's own groups/rules)
+# -----------------------------
+def build_maps(snippet: dict, group_prefix: str, ns: str) -> Maps:
+    group_map = {
+        g["name"]: f"{group_prefix}/{g['name']}"
+        for g in snippet.get("proxy-groups") or []
+        if isinstance(g, dict) and isinstance(g.get("name"), str) and g["name"]
+    }
+    proxy_map = {
+        p["name"]: f"{ns}/{p['name']}"
+        for p in snippet.get("proxies") or []
+        if isinstance(p, dict) and isinstance(p.get("name"), str) and p["name"]
+    }
     rps = snippet.get("rule-providers") or {}
-
-    group_map: Dict[str, str] = {}
-    for g in groups:
-        if isinstance(g, dict) and isinstance(g.get("name"), str) and g["name"]:
-            group_map[g["name"]] = f"{ns}/{g['name']}"
-
-    proxy_map: Dict[str, str] = {}
-    for p in proxies:
-        if isinstance(p, dict) and isinstance(p.get("name"), str) and p["name"]:
-            proxy_map[p["name"]] = f"{ns}/{p['name']}"
-
-    ruleset_map: Dict[str, str] = {}
-    if isinstance(rps, dict):
-        for k in rps.keys():
-            ruleset_map[k] = f"{ns}__{k}"
-
+    ruleset_map = {k: f"{group_prefix}__{k}" for k in rps} if isinstance(rps, dict) else {}
     return Maps(group_map=group_map, proxy_map=proxy_map, ruleset_map=ruleset_map)
 
 
-def raw_group_names(snippet: Dict[str, Any]) -> Set[str]:
-    names: Set[str] = set()
-    groups = snippet.get("proxy-groups") or []
-    if isinstance(groups, list):
-        for g in groups:
-            if isinstance(g, dict) and isinstance(g.get("name"), str) and g["name"]:
-                names.add(g["name"])
-    return names
+def raw_group_names(snippet: dict) -> Set[str]:
+    return {
+        g["name"]
+        for g in snippet.get("proxy-groups") or []
+        if isinstance(g, dict) and isinstance(g.get("name"), str) and g["name"]
+    }
 
 
-def is_leaf_group(group: Dict[str, Any], raw_names: Set[str]) -> bool:
-    """
-    Leaf group: its 'proxies' list does NOT reference any other group name defined in this snippet.
-    """
+def is_leaf_group(group: dict, raw_names: Set[str]) -> bool:
     proxies = group.get("proxies")
     if not isinstance(proxies, list):
         return True
-    for x in proxies:
-        if isinstance(x, str) and x in raw_names:
-            return False
-    return True
+    return not any(isinstance(x, str) and x in raw_names for x in proxies)
 
 
-def namespace_rule_providers(rps: Dict[str, Any], maps: Maps) -> Dict[str, Any]:
-    out: Dict[str, Any] = {}
+def namespace_rule_providers(rps: dict, maps: Maps) -> dict:
+    out: dict = {}
     for k, v in (rps or {}).items():
-        out[maps.ruleset_map.get(k, k)] = v
+        new_key = maps.ruleset_map.get(k, k)
+        v2 = dict(v) if isinstance(v, dict) else v
+        if isinstance(v2, dict) and v2.get("path"):
+            v2["path"] = f"./rules/{new_key}.yaml"  # avoid file clashes between entries
+        out[new_key] = v2
     return out
 
 
@@ -582,128 +442,72 @@ def rewrite_rule_line(line: str, maps: Maps) -> str:
     parts = split_top_level_commas(line)
     if len(parts) < 2:
         return line
-
-    rule_type = parts[0].strip()
-
-    # RULE-SET,SetName,Policy...
-    if rule_type == "RULE-SET" and len(parts) >= 3:
-        set_name = parts[1].strip()
-        if set_name in maps.ruleset_map:
-            parts[1] = maps.ruleset_map[set_name]
-
-    # policy position: usually last; if last is no-resolve -> policy is second-last
-    policy_idx = -1
-    if parts[-1].strip() == "no-resolve" and len(parts) >= 3:
-        policy_idx = -2
-
-    policy = parts[policy_idx].strip()
+    if parts[0].strip() == "RULE-SET" and len(parts) >= 3:
+        name = parts[1].strip()
+        if name in maps.ruleset_map:
+            parts[1] = maps.ruleset_map[name]
+    idx = policy_index(parts)
+    policy = parts[idx].strip()
     if policy in maps.group_map:
-        parts[policy_idx] = maps.group_map[policy]
+        parts[idx] = maps.group_map[policy]
     elif policy in maps.proxy_map:
-        parts[policy_idx] = maps.proxy_map[policy]
-
+        parts[idx] = maps.proxy_map[policy]
     return ",".join(parts)
 
 
-def rewrite_group(
-    g: Dict[str, Any],
-    ns: str,
-    maps: Maps,
-    has_provider: bool,
-    raw_names: Set[str],
-) -> Dict[str, Any]:
+def rewrite_group(g: dict, ns: str, maps: Maps, has_provider: bool, raw_names: Set[str]) -> dict:
     """
-    - Rename group name -> ns/group
-    - If local: rewrite references where possible; keep everything else
-    - If provider:
-        - leaf: nodes -> use:[ns] + filter exact match; keep only BUILTIN in proxies
-        - non-leaf: drop node names; keep BUILTIN + group references; add use if nodes were dropped
+    - rename group -> <prefix>/group
+    - local: rewrite group / local-proxy references, keep everything else
+    - provider leaf group: nodes -> use:[ns] + exact-match filter
+    - provider non-leaf group: keep builtins + group refs, drop node names (add use if any dropped)
     """
-    g2 = dict(g)
-
-    # rename group name
+    g2 = copy.deepcopy(g)
     old_name = g2.get("name")
     if isinstance(old_name, str) and old_name in maps.group_map:
         g2["name"] = maps.group_map[old_name]
 
-    # normalize proxies list
     proxies_list = g2.get("proxies") if isinstance(g2.get("proxies"), list) else []
 
-    # rewrite `use` placeholders (if any)
     if isinstance(g2.get("use"), list):
-        new_use = []
-        for u in g2["use"]:
-            if isinstance(u, str) and u in PROVIDER_PLACEHOLDERS:
-                new_use.append(ns)
-            else:
-                new_use.append(u)
-        g2["use"] = new_use
+        g2["use"] = [ns if isinstance(u, str) and u in PROVIDER_PLACEHOLDERS else u for u in g2["use"]]
 
     if not has_provider:
-        # local snippet: rename group refs and local proxy refs; keep unknown tokens
-        new_proxies: List[Any] = []
+        out: List[Any] = []
         for item in proxies_list:
-            if not isinstance(item, str):
-                new_proxies.append(item)
-                continue
-            if item in BUILTINS:
-                new_proxies.append(item)
-            elif item in maps.group_map:
-                new_proxies.append(maps.group_map[item])
-            elif item in maps.proxy_map:
-                new_proxies.append(maps.proxy_map[item])
+            if not isinstance(item, str) or item in BUILTINS:
+                out.append(item)
             else:
-                new_proxies.append(item)
-        if new_proxies:
-            g2["proxies"] = new_proxies
+                out.append(maps.group_map.get(item) or maps.proxy_map.get(item) or item)
+        if out:
+            g2["proxies"] = out
         return g2
 
-    # provider present
-    leaf = is_leaf_group(g, raw_names)
-
-    if leaf:
-        # If snippet already uses use+filter without proxies, keep filter and force use:[ns]
+    if is_leaf_group(g, raw_names):
         if not proxies_list:
             g2["use"] = [ns]
-            # if no filter given, it means "all nodes in provider"
-            # keep existing filter/exclude-filter if present
             return g2
-
         nodes: List[str] = []
         kept: List[str] = []
-
         for item in proxies_list:
             if not isinstance(item, str):
                 continue
             if item in BUILTINS:
                 kept.append(item)
-                continue
-            if item in raw_names:
-                # should not happen for leaf, but handle anyway as group ref
+            elif item in raw_names:
                 kept.append(maps.group_map.get(item, item))
-                continue
-
-            # treat as node
-            node_name = item
-            if not node_name.startswith(f"{ns}/"):
-                node_name = f"{ns}/{node_name}"
-            nodes.append(node_name)
-
+            else:
+                nodes.append(item if item.startswith(f"{ns}/") else f"{ns}/{item}")
         g2["use"] = [ns]
         g2["filter"] = regex_union_exact(nodes)
-
         if kept:
             g2["proxies"] = kept
         else:
             g2.pop("proxies", None)
-
-        # leaf: keep exclude-filter if user provided (rare)
         return g2
 
-    # non-leaf: keep only BUILTIN + group refs, and add use if we dropped any nodes
     kept2: List[str] = []
-    dropped_any_node = False
-
+    dropped = False
     for item in proxies_list:
         if not isinstance(item, str):
             continue
@@ -712,279 +516,136 @@ def rewrite_group(
         elif item in raw_names:
             kept2.append(maps.group_map.get(item, item))
         else:
-            # node name (or unknown token) in a non-leaf group -> drop it
-            dropped_any_node = True
-
-    if dropped_any_node:
+            dropped = True
+    if dropped:
         use_list = g2.get("use") if isinstance(g2.get("use"), list) else []
         if ns not in use_list:
             use_list.append(ns)
         g2["use"] = use_list
+        print(f"[提示] 分组 {old_name}: 非叶子组中的节点名已丢弃，改用 use:[{ns}]")
     else:
         g2.pop("use", None)
-
     if kept2:
         g2["proxies"] = kept2
+    elif not dropped:
+        g2["proxies"] = ["DIRECT"]
     else:
-        if dropped_any_node:
-            g2.pop("proxies", None)
-        else:
-            g2["proxies"] = ["DIRECT"]
-    g2.pop("filter", None)
-    g2.pop("exclude-filter", None)
-
-    return g2
-
-
-def rewrite_template_group(
-    g: Dict[str, Any],
-    *,
-    ns: str,
-    has_provider: bool,
-    local_proxy_names: list[str],
-    template_group_names: set[str],
-    default_leaf_group_name: str,
-) -> Dict[str, Any]:
-    g2 = dict(g)
-    old_name = g2.get("name")
-    if isinstance(old_name, str) and old_name in template_group_names:
-        g2["name"] = f"{ns}/{old_name}"
-
-    proxies_list = g2.get("proxies") if isinstance(g2.get("proxies"), list) else []
-    builtins, group_refs, needs_leaf = _analyze_group_proxies(proxies_list, template_group_names)
-    is_leaf = isinstance(old_name, str) and old_name in TEMPLATE_LEAF_GROUPS
-
-    if is_leaf:
-        proxies_out = builtins + [f"{ns}/{name}" for name in group_refs]
-        if has_provider:
-            g2["use"] = [ns]
-        else:
-            proxies_out.extend(local_proxy_names)
-            g2.pop("use", None)
-
-        proxies_out = _dedup_str_list([p for p in proxies_out if isinstance(p, str)])
-        if proxies_out:
-            g2["proxies"] = proxies_out
-        else:
-            if has_provider:
-                g2.pop("proxies", None)
-            else:
-                g2["proxies"] = ["DIRECT"]
-
-        g2.pop("filter", None)
-        g2.pop("exclude-filter", None)
-        return g2
-
-    proxies_out = builtins + [f"{ns}/{name}" for name in group_refs]
-    if needs_leaf:
-        if has_provider:
-            g2["use"] = [ns]
-        else:
-            proxies_out.extend(local_proxy_names)
-    else:
-        g2.pop("use", None)
-
-    proxies_out = _dedup_str_list([p for p in proxies_out if isinstance(p, str)])
-    if proxies_out:
-        g2["proxies"] = proxies_out
-    else:
-        if has_provider and needs_leaf:
-            g2.pop("proxies", None)
-        else:
-            g2["proxies"] = [default_leaf_group_name]
-
+        g2.pop("proxies", None)
     g2.pop("filter", None)
     g2.pop("exclude-filter", None)
     return g2
 
 
-def apply_template_for_ns(
-    cfg: dict,
-    *,
-    ns: str,
-    has_provider: bool,
-    local_proxy_names: list[str],
-    template_groups: list[dict],
-    template_rules: list[Any],
-    template_group_names: set[str],
-    rules_key: str,
-) -> None:
-    group_map = {name: f"{ns}/{name}" for name in template_group_names}
-    maps = Maps(group_map=group_map, proxy_map={}, ruleset_map={})
+def build_preserve_entry(cfg: dict, entry: Entry, infos: Dict[str, SourceInfo]) -> str:
+    ns = entry.sources[0]
+    info = infos[ns]
+    snippet = info.snippet or {}
+    groups = snippet.get("proxy-groups") or []
+    if not isinstance(groups, list) or not groups:
+        raise ValueError(f"来源 {ns} 的 snippet 缺少 proxy-groups（preserve 模式必需）")
+    rules = snippet.get("rules") or []
+    if not isinstance(rules, list):
+        raise ValueError(f"来源 {ns} 的 rules 必须是列表")
 
-    leaf_default_name = maps.group_map.get("🚀 节点选择", f"{ns}/🚀 节点选择")
-    for g in template_groups:
+    maps = build_maps(snippet, entry.name, ns)
+    raw_names = raw_group_names(snippet)
+    for g in groups:
         if isinstance(g, dict):
-            cfg["proxy-groups"].append(
-                rewrite_template_group(
-                    g,
-                    ns=ns,
-                    has_provider=has_provider,
-                    local_proxy_names=local_proxy_names,
-                    template_group_names=template_group_names,
-                    default_leaf_group_name=leaf_default_name,
-                )
-            )
+            cfg["proxy-groups"].append(rewrite_group(g, ns, maps, info.has_provider, raw_names))
 
-    rewritten_rules = [rewrite_rule_line(str(r), maps) for r in template_rules]
-    cfg.setdefault("sub-rules", {})
-    cfg["sub-rules"][rules_key] = rewritten_rules
+    rps = snippet.get("rule-providers")
+    if isinstance(rps, dict):
+        for k, v in namespace_rule_providers(rps, maps).items():
+            cfg["rule-providers"].setdefault(k, v)
 
-
-def ensure_all_template_groups(
-    cfg: dict,
-    *,
-    template_groups: list[dict],
-    template_group_names: set[str],
-    remote_ns_list: list[str],
-    local_proxy_names: list[str],
-) -> None:
-    groups = cfg.setdefault("proxy-groups", [])
-    if not isinstance(groups, list):
-        raise TypeError('cfg["proxy-groups"] must be a list')
-
-    remote_use = _dedup_str_list([ns for ns in remote_ns_list if isinstance(ns, str) and ns])
-    local_leaf = _dedup_str_list([p for p in local_proxy_names if isinstance(p, str) and p])
-
-    def find(name: str) -> dict | None:
-        for g in groups:
-            if isinstance(g, dict) and g.get("name") == name:
-                return g
-        return None
-
-    for g in template_groups:
-        if not isinstance(g, dict):
-            continue
-        name = g.get("name")
-        if not isinstance(name, str):
-            continue
-
-        g2 = dict(g)
-        g2["name"] = f"ALL/{name}"
-
-        proxies_list = g2.get("proxies") if isinstance(g2.get("proxies"), list) else []
-        builtins, group_refs, needs_leaf = _analyze_group_proxies(proxies_list, template_group_names)
-
-        proxies_out = builtins + [f"ALL/{ref}" for ref in group_refs]
-        if needs_leaf:
-            proxies_out.extend(local_leaf)
-
-        proxies_out = _dedup_str_list([p for p in proxies_out if isinstance(p, str)])
-        if proxies_out:
-            g2["proxies"] = proxies_out
-        else:
-            g2.pop("proxies", None)
-
-        if needs_leaf and remote_use:
-            g2["use"] = list(remote_use)
-        else:
-            g2.pop("use", None)
-
-        g2.pop("filter", None)
-        g2.pop("exclude-filter", None)
-
-        existing = find(g2["name"])
-        if existing is None:
-            groups.append(g2)
-            continue
-
-        for key, val in g2.items():
-            if key in {"proxies", "use", "name"}:
-                continue
-            existing[key] = val
-
-        if "proxies" in g2:
-            required = g2["proxies"] if isinstance(g2.get("proxies"), list) else []
-            existing_list = existing.get("proxies") if isinstance(existing.get("proxies"), list) else []
-            extras = [x for x in existing_list if isinstance(x, str) and x not in required]
-            existing["proxies"] = _dedup_str_list(required + extras)
-        else:
-            existing.pop("proxies", None)
-
-        if "use" in g2:
-            required_use = g2["use"] if isinstance(g2.get("use"), list) else []
-            existing_use = existing.get("use") if isinstance(existing.get("use"), list) else []
-            extras_use = [x for x in existing_use if isinstance(x, str) and x not in required_use]
-            existing["use"] = _dedup_str_list(required_use + extras_use)
-        else:
-            existing.pop("use", None)
-
-
-def apply_template_global(
-    cfg: dict,
-    *,
-    template_groups: list[dict],
-    template_rules: list[Any],
-    template_rule_providers: dict,
-    template_group_names: set[str],
-    remote_ns_list: list[str],
-    local_proxy_names: list[str],
-) -> None:
-    merge_rule_providers(cfg.setdefault("rule-providers", {}), template_rule_providers)
-    ensure_all_template_groups(
-        cfg,
-        template_groups=template_groups,
-        template_group_names=template_group_names,
-        remote_ns_list=remote_ns_list,
-        local_proxy_names=local_proxy_names,
-    )
-
-    all_maps = Maps(
-        group_map={name: f"ALL/{name}" for name in template_group_names},
-        proxy_map={},
-        ruleset_map={},
-    )
-    cfg["rules"] = [rewrite_rule_line(str(r), all_maps) for r in template_rules]
+    lines = [rewrite_rule_line(str(r), maps) for r in rules]
+    if not any(r.strip().startswith("MATCH,") for r in lines):
+        lines.append("MATCH,DIRECT")
+    key = f"rules_{entry.name}"
+    cfg["sub-rules"][key] = lines
+    return key
 
 
 # -----------------------------
-# Build merged config
+# template profile
+# -----------------------------
+def build_template_entry(cfg: dict, entry: Entry, infos: Dict[str, SourceInfo], tpl: Templates) -> str:
+    prefix = entry.name
+    names = {g["name"] for g in tpl.groups if isinstance(g.get("name"), str)}
+    remote = [ns for ns in entry.sources if infos[ns].has_provider]
+    local = [n for ns in entry.sources for n in infos[ns].local_names]
+
+    for g in tpl.groups:
+        g2 = {k: copy.deepcopy(v) for k, v in g.items() if k != "proxies"}
+        g2["name"] = f"{prefix}/{g['name']}"
+        proxies: List[str] = []
+        needs_leaf = False
+        for item in g.get("proxies") or []:
+            if item == LEAF:
+                needs_leaf = True
+            elif item in names:
+                proxies.append(f"{prefix}/{item}")
+            else:
+                proxies.append(item)
+        if needs_leaf:
+            proxies.extend(local)
+            if remote:
+                g2["use"] = list(remote)
+        proxies = dedup(proxies)
+        if proxies:
+            g2["proxies"] = proxies
+        elif not g2.get("use"):
+            g2["proxies"] = ["DIRECT"]
+        cfg["proxy-groups"].append(g2)
+
+    maps = Maps(group_map={n: f"{prefix}/{n}" for n in names}, proxy_map={}, ruleset_map={})
+    key = f"rules_{entry.name}"
+    cfg["sub-rules"][key] = [rewrite_rule_line(r, maps) for r in tpl.rules]
+    return key
+
+
+def template_ruleset_refs(tpl: Templates) -> List[str]:
+    refs: List[str] = []
+    for r in tpl.rules:
+        parts = split_top_level_commas(r)
+        if parts[0] == "RULE-SET" and len(parts) >= 3:
+            refs.append(parts[1])
+    return dedup(refs)
+
+
+# -----------------------------
+# Build
 # -----------------------------
 def build_config(
-    sources: list,
-    base: dict | None = None,
+    base: dict,
+    tpl: Templates,
+    sources: List[Source],
+    entries: List[Entry],
     listen_addr: str = "127.0.0.1",
-    keep_original_groups_rules: bool = True,
+    refresh: bool = False,
 ) -> dict:
-    merged: dict = base if isinstance(base, dict) else {}
+    src_by_ns = {s.ns: s for s in sources}
+    default_entry = next(e for e in entries if e.default)
 
-    merged.setdefault("mode", "rule")
-    merged.setdefault("proxy-providers", {})
-    merged.setdefault("rule-providers", {})
-    merged.setdefault("proxies", [])
-    merged.setdefault("proxy-groups", [])
-    merged.setdefault("listeners", [])
-    merged.setdefault("sub-rules", {})
-    merged.setdefault("rules", ["MATCH,DIRECT"])  # 默认端口用什么，你可后续再覆盖
-    template_groups, template_rules, template_rule_providers = load_template_parts()
-    template_group_names = {
-        g.get("name") for g in template_groups if isinstance(g, dict) and isinstance(g.get("name"), str)
-    }
-    template_group_names = {n for n in template_group_names if isinstance(n, str)}
+    cfg: dict = substitute(copy.deepcopy(base or {}), DEFAULT_PLACEHOLDER, default_entry.name)
+    cfg.setdefault("mode", "rule")
+    for k, v in (("proxy-providers", {}), ("rule-providers", {}), ("proxies", []),
+                 ("proxy-groups", []), ("listeners", []), ("sub-rules", {})):
+        cfg[k] = cfg.get(k) or v
 
-    remote_ns_list: list[str] = []
-    local_proxy_names_all: list[str] = []
+    used_ns = dedup([ns for e in entries for ns in e.sources])
+    preserve_ns = {ns for e in entries if e.profile == "preserve" for ns in e.sources}
 
-    for src in sources:
-        snippet = load_yaml_file(src.yaml_path)
-        if not isinstance(snippet, dict):
-            raise ValueError(f"{src.yaml_path} 不是 YAML dict（请确保顶层是 key:value 形式）")
-
-        is_local = src.url.strip().lower() == "local"
-        has_provider = not is_local
-
-        maps = build_maps(snippet, src.ns)
-        raw_names = raw_group_names(snippet)
-
-        # 1) provider (remote)
-        if has_provider:
-            pp = merged["proxy-providers"]
-            if src.ns in pp:
-                raise ValueError(f"provider 名冲突：{src.ns} 已存在")
-            pp[src.ns] = {
+    # 1) sources: providers, snippets, local proxies (once per source)
+    infos: Dict[str, SourceInfo] = {}
+    for ns in used_ns:
+        src = src_by_ns[ns]
+        info = SourceInfo(has_provider=not src.is_local)
+        if info.has_provider:
+            cfg["proxy-providers"][ns] = {
                 "type": "http",
                 "url": src.url.strip(),
-                "path": f"./proxy_providers/{src.ns}.yaml",
+                "path": f"./proxy_providers/{ns}.yaml",
                 "interval": 3600,
                 "health-check": {
                     "enable": True,
@@ -993,125 +654,172 @@ def build_config(
                     "lazy": True,
                     "expected-status": 204,
                 },
-                "override": {"additional-prefix": f"{src.ns}/"},
+                "override": {"additional-prefix": f"{ns}/"},
             }
-            remote_ns_list.append(src.ns)
+        if src.is_local or ns in preserve_ns:
+            path = Path(src.snippet or f"snippets/{ns}.yaml")
+            if not src.is_local:
+                fetch_snippet(src, path, refresh)
+            snippet = load_yaml_file(path)
+            if not isinstance(snippet, dict):
+                raise ValueError(f"{path} 不是 YAML dict")
+            info.snippet = snippet
+            if src.is_local:
+                for p in snippet.get("proxies") or []:
+                    if isinstance(p, dict) and isinstance(p.get("name"), str) and p["name"]:
+                        p2 = dict(p)
+                        p2["name"] = f"{ns}/{p['name']}"
+                        cfg["proxies"].append(p2)
+                        info.local_names.append(p2["name"])
+                if not info.local_names:
+                    print(f"[警告] 本地来源 {ns} 没有可用的 proxies")
+        infos[ns] = info
 
-        # 2) import local proxies
-        local_names: list[str] = []
-        if is_local and isinstance(snippet.get("proxies"), list):
-            for p in snippet["proxies"]:
-                if isinstance(p, dict) and isinstance(p.get("name"), str) and p["name"]:
-                    p2 = dict(p)
-                    new_name = maps.proxy_map.get(p["name"], f"{src.ns}/{p['name']}")
-                    p2["name"] = new_name
-                    merged["proxies"].append(p2)
-                    local_names.append(new_name)
-            local_proxy_names_all.extend(local_names)
-
-        # 3) listener.rule
-        if keep_original_groups_rules:
-            # merge groups/rules from snippet
-            groups = snippet.get("proxy-groups") or []
-            if not isinstance(groups, list) or not groups:
-                raise ValueError(f"{src.yaml_path} 缺少 proxy-groups（至少要有一个）")
-
-            for g in groups:
-                if isinstance(g, dict):
-                    merged["proxy-groups"].append(
-                        rewrite_group(
-                            g=g,
-                            ns=src.ns,
-                            maps=maps,
-                            has_provider=has_provider,
-                            raw_names=raw_names,
-                        )
-                    )
-
-            rules = snippet.get("rules") or []
-            if not isinstance(rules, list):
-                raise ValueError(f"{src.yaml_path} 的 rules 必须是列表")
-
-            rules_key = f"rules_{src.ns}"
-            if isinstance(snippet.get("rule-providers"), dict):
-                merge_rule_providers(
-                    merged["rule-providers"],
-                    namespace_rule_providers(snippet.get("rule-providers") or {}, maps),
-                )
-            rewritten_rules = [rewrite_rule_line(str(r), maps) for r in rules]
-            if not any(str(r).strip().startswith("MATCH,") for r in rewritten_rules):
-                rewritten_rules.append("MATCH,DIRECT")
-            merged["sub-rules"][rules_key] = rewritten_rules
-
-            listener_rule = rules_key
-
+    # 2) entries
+    for e in entries:
+        if e.profile == "preserve":
+            key = build_preserve_entry(cfg, e, infos)
         else:
-            # ✅ 不保留：每个 ns 使用模板分组/规则
-            listener_rule = f"template_{src.ns}"
-            apply_template_for_ns(
-                merged,
-                ns=src.ns,
-                has_provider=has_provider,
-                local_proxy_names=local_names,
-                template_groups=template_groups,
-                template_rules=template_rules,
-                template_group_names=template_group_names,
-                rules_key=listener_rule,
-            )
-
-        merged["listeners"].append({
-            "name": f"in-{src.ns}",
+            key = build_template_entry(cfg, e, infos, tpl)
+        cfg["listeners"].append({
+            "name": f"in-{e.name}",
             "type": "mixed",
             "listen": listen_addr,
-            "port": int(src.port),
+            "port": int(e.port),
             "udp": True,
-            "rule": listener_rule,
+            "rule": key,
         })
 
-    apply_template_global(
-        merged,
-        template_groups=template_groups,
-        template_rules=template_rules,
-        template_rule_providers=template_rule_providers,
-        template_group_names=template_group_names,
-        remote_ns_list=remote_ns_list,
-        local_proxy_names=local_proxy_names_all,
-    )
+    # 3) rule-providers used by the template
+    if any(e.profile == "template" for e in entries):
+        refs = template_ruleset_refs(tpl)
+        for name in refs:
+            if name not in tpl.rulesets:
+                raise ValueError(f"rules.yaml 引用了未在 rulesets.yaml 声明的规则集: {name}")
+            cfg["rule-providers"].setdefault(name, copy.deepcopy(tpl.rulesets[name]))
+        unused = [n for n in tpl.rulesets if n not in refs]
+        if unused:
+            print(f"[警告] rulesets.yaml 中声明但未被 rules.yaml 使用，已忽略: {', '.join(unused)}")
+
+    # 4) global rules come from the default entry
+    cfg["rules"] = list(cfg["sub-rules"][f"rules_{default_entry.name}"])
+    return cfg
 
 
-    return merged
+# -----------------------------
+# Validation
+# -----------------------------
+def validate(cfg: dict) -> Tuple[List[str], List[str]]:
+    errors: List[str] = []
+    warnings: List[str] = []
+
+    group_names = [g["name"] for g in cfg["proxy-groups"] if isinstance(g, dict) and "name" in g]
+    proxy_names = [p["name"] for p in cfg["proxies"] if isinstance(p, dict) and "name" in p]
+    for label, names in (("分组", group_names), ("节点", proxy_names)):
+        for n in {x for x in names if names.count(x) > 1}:
+            errors.append(f"重复的{label}名: {n}")
+    for n in set(group_names) & set(proxy_names):
+        errors.append(f"分组与节点重名: {n}")
+
+    providers = set(cfg["proxy-providers"])
+    rps = set(cfg["rule-providers"])
+    known = set(group_names) | set(proxy_names) | BUILTINS
+
+    referenced: Set[str] = set()
+    for g in cfg["proxy-groups"]:
+        for item in g.get("proxies") or []:
+            if isinstance(item, str):
+                referenced.add(item)
+                if item not in known:
+                    warnings.append(f"分组 {g['name']} 引用了不存在的目标: {item}")
+        for u in g.get("use") or []:
+            if u not in providers:
+                errors.append(f"分组 {g['name']} 的 use 引用了不存在的 provider: {u}")
+
+    rule_lists = list(cfg["sub-rules"].values()) + [cfg["rules"]]
+    used_rps: Set[str] = set()
+    for rules in rule_lists:
+        for line in rules:
+            parts = split_top_level_commas(str(line))
+            kind = parts[0]
+            if kind == "RULE-SET" and len(parts) >= 3:
+                used_rps.add(parts[1])
+                if parts[1] not in rps:
+                    errors.append(f"规则引用了不存在的规则集: {line}")
+            if kind in {"SUB-RULE", "AND", "OR", "NOT"} or len(parts) < 2:
+                continue
+            policy = parts[policy_index(parts)]
+            referenced.add(policy)
+            if policy not in known:
+                warnings.append(f"规则的策略不存在: {line}")
+
+    for k in sorted(rps - used_rps):
+        warnings.append(f"规则集 {k} 已定义但未被任何规则使用")
+    for n in group_names:
+        if n not in referenced:
+            warnings.append(f"分组 {n} 未被任何规则或分组引用")
+
+    ports: Dict[int, str] = {}
+    for ln in cfg["listeners"]:
+        if ln["port"] in ports:
+            errors.append(f"端口冲突: {ln['port']} ({ports[ln['port']]} / {ln['name']})")
+        ports[ln["port"]] = ln["name"]
+        if ln["rule"] not in cfg["sub-rules"]:
+            errors.append(f"监听 {ln['name']} 引用了不存在的 sub-rule: {ln['rule']}")
+
+    dns = cfg.get("dns") or {}
+    for key in ("nameserver", "fallback", "default-nameserver", "proxy-server-nameserver"):
+        for s in dns.get(key) or []:
+            if isinstance(s, str) and "#" in s:
+                target = s.split("#", 1)[1]
+                if target not in known:
+                    warnings.append(f"dns.{key} 指向了不存在的分组: {target}")
+    return errors, warnings
 
 
 # -----------------------------
 # Entrypoint
 # -----------------------------
 def main() -> None:
-    import argparse
-    ap = argparse.ArgumentParser(description="合并多订阅片段 -> mihomo config")
-    ap.add_argument("--base", help="可选：基础配置 base.yaml（dns/tun 等通用设置；未提供时使用内置默认）")
+    ap = argparse.ArgumentParser(description="多订阅多端口 -> mihomo config")
+    ap.add_argument("--config-dir", default=str(HERE / "config"), help="模板目录（base/rulesets/groups/rules）")
+    ap.add_argument("--base", help="可选：覆盖 config/base.yaml")
+    ap.add_argument("--sources", default="sources.yaml", help="订阅/入口配置文件（不存在则交互生成）")
     ap.add_argument("--out", default="merged.yaml", help="输出文件路径")
-    ap.add_argument("--listen", default="127.0.0.1", help="listeners 监听地址（默认 127.0.0.1）")
+    ap.add_argument("--listen", default="127.0.0.1", help="listeners 监听地址")
+    ap.add_argument("--yes", action="store_true", help="存在 sources.yaml 时直接复用，不询问")
+    ap.add_argument("--refresh", action="store_true", help="强制重新下载订阅 snippet")
     args = ap.parse_args()
 
-    base = load_yaml_file(args.base) if args.base else copy.deepcopy(DEFAULT_BASE_CONFIG)
-    keep_original = prompt_yes_no("是否保留原有订阅的 proxy-groups/rules（每个端口独立 sub-rules）？否则使用模板分组/规则简化", default=True)
-    sources = prompt_sources()
+    config_dir = Path(args.config_dir).expanduser().resolve()
+    tpl = load_templates(config_dir)
+    base = load_yaml_file(args.base or config_dir / "base.yaml") or {}
 
+    sources_path = Path(args.sources).expanduser().resolve()
+    reuse = False
+    if sources_path.exists():
+        sources, entries = load_sources(sources_path)
+        print_summary(sources, entries)
+        reuse = args.yes or prompt_yes_no(f"发现 {sources_path.name}，是否复用？", True)
+    if not reuse:
+        sources, entries = prompt_sources_interactive()
+        check_structure(sources, entries)
+        save_sources(sources_path, sources, entries)
+        print(f"[信息] 已保存配置：{sources_path}")
 
+    cfg = build_config(base, tpl, sources, entries, listen_addr=args.listen, refresh=args.refresh)
 
-    merged = build_config(
-        sources=sources,
-        base=base,
-        listen_addr=args.listen,
-        keep_original_groups_rules=keep_original,
-    )
+    errors, warnings = validate(cfg)
+    for w in warnings:
+        print(f"[警告] {w}")
+    if errors:
+        for e in errors:
+            print(f"[错误] {e}")
+        raise SystemExit(2)
 
     out_path = Path(args.out).expanduser().resolve()
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    with out_path.open("w", encoding="utf-8") as f:
-        yaml.dump(merged, f)
-
-    print(f"\n✅ 已生成：{out_path}")
+    dump_yaml_file(cfg, out_path)
+    print(f"\n[完成] 已生成：{out_path}")
 
 
 if __name__ == "__main__":
@@ -1120,6 +828,8 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         print("\n已取消")
         sys.exit(1)
-    except Exception as e:
-        print(f"\n❌ 错误：{e}")
+    except SystemExit:
+        raise
+    except Exception as e:  # noqa: BLE001
+        print(f"\n[错误] {e}")
         sys.exit(2)

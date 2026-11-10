@@ -1,0 +1,39 @@
+# 通用设置，与订阅无关。先沿用 merge.py 里 DEFAULT_BASE_CONFIG 的内容，暂不改动。
+mode: rule
+log-level: info
+ipv6: false
+external-controller: 127.0.0.1:9090
+dns:
+  enable: true
+  listen: 127.0.0.1:53
+  ipv6: false
+  use-system-hosts: false
+  # 只用来解析 DoH 服务器自身的域名，必须是 IP 且直连
+  default-nameserver: [223.5.5.5, 119.29.29.29]
+  # 解析节点域名，必须直连，不能走代理组（否则死循环）
+  proxy-server-nameserver: [223.5.5.5, 119.29.29.29]
+  # DoH 经代理组发出。{DEFAULT} 由脚本替换为 sources.yaml 里 default: true 的入口名
+  nameserver:
+    - https://1.1.1.1/dns-query#{DEFAULT}/🤖 AI服务
+    - https://8.8.8.8/dns-query#{DEFAULT}/🤖 AI服务
+  enhanced-mode: fake-ip
+  fake-ip-range: 198.18.0.1/16
+  fake-ip-filter:
+    - '*.lan'
+    - '*.localdomain'
+    - '*.example'
+    - '*.invalid'
+    - '*.localhost'
+    - '*.test'
+    - '*.local'
+    - '*.home.arpa'
+    - router.asus.com
+    - localhost.sec.qq.com
+    - localhost.ptlogin2.qq.com
+    - +.msftconnecttest.com
+tun:
+  enable: true
+  stack: system
+  auto-route: true
+  auto-detect-interface: true
+  dns-hijack: [8.8.8.8, 114.114.114.114, 180.76.76.76, 119.29.29.29, 223.5.5.5, 8.8.4.4, 1.1.1.1, 1.0.0.1]

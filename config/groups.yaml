@@ -1,0 +1,34 @@
+# 模板分组。每个入口（端口）各生成一份，名字自动加 "<入口名>/" 前缀。
+# proxies 里可写：DIRECT / REJECT 等内置、本文件里的其他组名、LEAF。
+# LEAF = "该入口的全部节点"：远程订阅 -> 写入 use，本地节点 -> 写入 proxies（可同时存在）。
+groups:
+  - name: 🚀 节点选择
+    type: select
+    proxies: [♻️ 自动选择, DIRECT, LEAF]
+
+  - name: ♻️ 自动选择
+    type: url-test
+    url: https://www.gstatic.com/generate_204
+    interval: 300
+    tolerance: 50
+    proxies: [LEAF]
+
+  - name: 🎯 全球直连
+    type: select
+    proxies: [DIRECT, 🚀 节点选择, ♻️ 自动选择]
+
+  - name: 🛑 广告拦截
+    type: select
+    proxies: [REJECT, DIRECT]
+
+  - name: 🔍 Google
+    type: select
+    proxies: [🚀 节点选择, ♻️ 自动选择, DIRECT, LEAF]
+
+  - name: 🤖 AI服务
+    type: select
+    proxies: [🚀 节点选择, ♻️ 自动选择, DIRECT, LEAF]
+
+  - name: 🐟 漏网之鱼
+    type: select
+    proxies: [🚀 节点选择, 🎯 全球直连, ♻️ 自动选择, LEAF]

@@ -1,0 +1,24 @@
+# 示例。首次运行脚本若没有 sources.yaml，会交互输入并自动生成它；之后运行会询问是否复用。
+# sources.yaml 含订阅 token，已加入 .gitignore，请勿提交。
+# 说明：入口(entries)引用订阅(sources)，一个入口可混用远程订阅与本地节点。
+sources:
+  - ns: sub1
+    url: https://example.com/sub?token=xxx   # 远程订阅（需为 Clash YAML）
+  - ns: myvps
+    url: local
+    snippet: snippets/myvps.yaml             # local 时必填：含 proxies 的 yaml
+
+entries:
+  - name: main
+    port: 7897
+    sources: [sub1]
+    profile: template          # template=用 groups/rules 模板；preserve=保留订阅自带分组/规则
+  - name: mix
+    port: 7898
+    sources: [sub1, myvps]     # 远程进 use，本地进 proxies，同一个组里
+    profile: template
+  - name: ALL                  # 普通入口，不再特殊；同时作为全局 rules 的来源
+    port: 7899
+    sources: [sub1, myvps]
+    profile: template
+    default: true
