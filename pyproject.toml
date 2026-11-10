@@ -4,6 +4,8 @@ version = "0.1.0"
 description = "多订阅多端口 mihomo / Clash Verge Rev 配置生成器"
 readme = "README.md"
 requires-python = ">=3.9"
+license = "GPL-3.0-or-later"
+license-files = ["LICENSE"]
 dependencies = ["ruamel.yaml", "requests"]
 
 [project.urls]
@@ -25,4 +27,4 @@ only-include = ["merge.py", "share_links.py"]
 "config" = "merge_config"
 
 [tool.hatch.build.targets.sdist]
-include = ["merge.py", "share_links.py", "config", "README.md", "pyproject.toml"]
+include = ["merge.py", "share_links.py", "config", "README.md", "pyproject.toml", "LICENSE"]

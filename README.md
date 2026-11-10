@@ -109,3 +109,7 @@ merged.yaml         生成的配置
 
 - **template**（推荐）：所有入口统一用 `config/` 里的模板分组和规则。
 - **preserve**：保留订阅自带的分组和规则，只做命名空间化，需要 Clash YAML 格式的订阅片段。
+
+## 许可证
+
+本项目以 [GNU GPL v3 或更高版本](LICENSE)（`GPL-3.0-or-later`）发布。
