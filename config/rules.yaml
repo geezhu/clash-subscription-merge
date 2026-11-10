@@ -18,4 +18,4 @@ rules:
   - RULE-SET,ChinaDomain,🎯 全球直连
   - RULE-SET,ChinaCompanyIp,🎯 全球直连
   - GEOIP,CN,🎯 全球直连
-  - MATCH,🐟 漏网之鱼
+  - MATCH,🚀 节点选择

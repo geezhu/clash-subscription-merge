@@ -3,7 +3,8 @@
 # LEAF = "该入口的全部节点"：远程订阅 -> 写入 use，本地节点 -> 写入 proxies（可同时存在）。
 # standalone: true = 不被其他组/规则引用的独立组（如测速组），不会触发"未被引用"警告，该字段不会写入输出。
 # scope: shared = 全局只生成一份：名字不加入口前缀，LEAF 展开为【所有来源】的全部节点（与是否有 ALL 入口无关）。
-#   共享组只能引用内置策略或其他共享组。该字段不会写入输出。
+#   共享组里引用【每个入口的组】（如 🚀 节点选择）时，会展开成所有入口各自的那个组（main/🚀 节点选择、mix/🚀 节点选择 ...）。
+#   注意不要让入口组与共享组互相引用，避免循环。该字段不会写入输出。
 groups:
   - name: 🚀 节点选择
     type: select
@@ -24,16 +25,14 @@ groups:
 
   - name: 🛑 广告拦截
     type: select
+    scope: shared
     proxies: [REJECT, DIRECT]
 
   - name: 🔍 Google
     type: select
-    proxies: [🚀 节点选择, DIRECT, LEAF]
+    scope: shared
+    proxies: [🚀 节点选择, DIRECT, LEAF]   # 🚀 节点选择 会展开为每个入口各自的节点选择
 
   - name: 🤖 AI服务
     type: select
     proxies: [🚀 节点选择, DIRECT, LEAF]
-
-  - name: 🐟 漏网之鱼
-    type: select
-    proxies: [🚀 节点选择, 🎯 全球直连, LEAF]

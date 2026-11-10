@@ -710,7 +710,11 @@ def make_group(g: dict, name: str, resolve: Any, remote: List[str], local: List[
         if item == LEAF:
             needs_leaf = True
         else:
-            proxies.append(resolve(item) if isinstance(item, str) else item)
+            r = resolve(item) if isinstance(item, str) else item
+            if isinstance(r, list):  # a shared group referencing a per-entry group fans out to every entry
+                proxies.extend(r)
+            else:
+                proxies.append(r)
     if needs_leaf:
         proxies.extend(local)
         if remote:
@@ -724,19 +728,28 @@ def make_group(g: dict, name: str, resolve: Any, remote: List[str], local: List[
 
 
 def build_shared_groups(
-    cfg: dict, tpl: Templates, infos: Dict[str, SourceInfo], used_ns: List[str], standalone: Set[str]
+    cfg: dict, tpl: Templates, infos: Dict[str, SourceInfo], used_ns: List[str],
+    entries: List[Entry], standalone: Set[str],
 ) -> None:
-    """Groups with `scope: shared` are created once, without an entry prefix, over ALL sources."""
+    """
+    Groups with `scope: shared` are created once, without an entry prefix, over ALL sources.
+    References: builtins and other shared groups stay as they are; a per-entry group name
+    (e.g. "🚀 节点选择") expands to that group of EVERY template entry (main/🚀 节点选择, mix/...).
+    """
     shared, per_entry = template_group_names(tpl)
     if not shared:
         return
     remote = [ns for ns in used_ns if infos[ns].has_provider]
     local = dedup([n for ns in used_ns for n in infos[ns].local_names])
-    # a shared group can only reference shared groups / builtins (per-entry groups differ by entry)
+    tpl_entries = [e.name for e in entries if e.profile == "template"]
+
+    def resolve(item: str) -> Any:
+        return [f"{name}/{item}" for name in tpl_entries] if item in per_entry else item
+
     for g in tpl.groups:
         if g.get("scope") != SHARED:
             continue
-        g2 = make_group(g, g["name"], lambda item: item, remote, local)
+        g2 = make_group(g, g["name"], resolve, remote, local)
         if g.get("standalone"):
             standalone.add(g2["name"])
         cfg["proxy-groups"].append(g2)
@@ -867,7 +880,7 @@ def build_config(
 
     # 2b) shared groups (e.g. the single latency-test group over all nodes)
     if any(e.profile == "template" for e in entries):
-        build_shared_groups(cfg, tpl, infos, used_ns, standalone)
+        build_shared_groups(cfg, tpl, infos, used_ns, entries, standalone)
 
     # 3) rule-providers used by the template
     if any(e.profile == "template" for e in entries):
