@@ -47,6 +47,7 @@ LEAF = "LEAF"
 DEFAULT_PLACEHOLDER = "{DEFAULT}"
 PROFILES = ("template", "preserve")
 SHARED = "shared"  # groups.yaml `scope: shared`: one global copy over all sources, no entry prefix
+DEFAULT_ONLY = "default"  # groups.yaml `scope: default`: only the default entry (e.g. ALL) gets this group
 SNIPPET_UA = "clash-verge/v2.4.4"  # 默认伪装成 Clash Verge；可用 --ua 覆盖
 
 
@@ -679,7 +680,8 @@ def build_template_entry(
         return f"{prefix}/{item}" if item in per_entry else item  # shared groups keep their plain name
 
     for g in tpl.groups:
-        if g.get("scope") == SHARED:
+        scope = g.get("scope")
+        if scope == SHARED or (scope == DEFAULT_ONLY and not entry.default):
             continue
         g2 = make_group(g, f"{prefix}/{g['name']}", resolve, remote, local)
         if g.get("standalone"):
@@ -689,8 +691,20 @@ def build_template_entry(
     group_map = {n: f"{prefix}/{n}" for n in per_entry}
     maps = Maps(group_map=group_map, proxy_map={}, ruleset_map={})
     key = f"rules_{entry.name}"
-    cfg["sub-rules"][key] = [rewrite_rule_line(r, maps) for r in tpl.rules]
+    # rules pointing at a default-only group (e.g. AI) are dropped for the other entries: the group does not exist there
+    dropped = set() if entry.default else default_only_names(tpl)
+    lines = [r for r in tpl.rules if rule_policy(r) not in dropped]
+    cfg["sub-rules"][key] = [rewrite_rule_line(r, maps) for r in lines]
     return key
+
+
+def default_only_names(tpl: Templates) -> Set[str]:
+    return {g["name"] for g in tpl.groups if isinstance(g.get("name"), str) and g.get("scope") == DEFAULT_ONLY}
+
+
+def rule_policy(line: str) -> str:
+    parts = split_top_level_commas(line)
+    return parts[policy_index(parts)] if len(parts) >= 2 else ""
 
 
 def template_group_names(tpl: Templates) -> Tuple[Set[str], Set[str]]:
@@ -741,10 +755,14 @@ def build_shared_groups(
         return
     remote = [ns for ns in used_ns if infos[ns].has_provider]
     local = dedup([n for ns in used_ns for n in infos[ns].local_names])
-    tpl_entries = [e.name for e in entries if e.profile == "template"]
+    tpl_entries = [e for e in entries if e.profile == "template"]
+    default_only = default_only_names(tpl)
 
     def resolve(item: str) -> Any:
-        return [f"{name}/{item}" for name in tpl_entries] if item in per_entry else item
+        if item not in per_entry:
+            return item
+        # default-only groups exist only on the default entry; others exist on every template entry
+        return [f"{e.name}/{item}" for e in tpl_entries if e.default or item not in default_only]
 
     for g in tpl.groups:
         if g.get("scope") != SHARED:

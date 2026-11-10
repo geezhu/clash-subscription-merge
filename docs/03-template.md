@@ -14,7 +14,7 @@
 | 文件 | 内容 |
 |---|---|
 | `config/rulesets.yaml` | 规则集，只写名字和 URL；`type/behavior/format/path` 由 `defaults` 补全 |
-| `config/groups.yaml` | 模板分组：每个入口 3 个（节点选择、全球直连、AI 服务）+ 全局共享 3 个（延迟测试、Google、广告拦截） |
+| `config/groups.yaml` | 模板分组：每个入口 2 个（节点选择、全球直连）+ 仅默认入口 1 个（AI 服务）+ 全局共享 3 个（延迟测试、Google、广告拦截） |
 | `config/rules.yaml` | 模板规则，**自上而下匹配，命中即停** |
 
 ## 2) 规则顺序的原则
@@ -42,6 +42,10 @@
 （`main/🚀 节点选择`、`mix/🚀 节点选择`……），这样共享的 `🔍 Google` 就能“跟随某个端口的节点选择”。该字段不会写入输出。
 `🔍 Google` 是共享的，所以**所有端口共用同一个选择**：在面板里切换它，所有入口的 Google/Gemini 流量一起换节点。
 注意不要让入口组和共享组互相引用，否则会形成循环。
+
+**仅默认入口的组（`scope: default`）**：`🤖 AI服务` 只给默认入口（`default: true`，通常是 `ALL`）生成，名字是 `ALL/🤖 AI服务`；
+其他入口没有这个组，`rules.yaml` 里指向它的规则（如 `RULE-SET,AI,🤖 AI服务`）在其他入口中会被省略，这些流量按后面的规则走。
+`base.yaml` 里的 DoH 也是经这个组发出的（`{DEFAULT}/🤖 AI服务`）。如果默认入口用的是 preserve 模式，就没有这个组，DoH 会因此失效，校验会给出警告。
 
 ## 4) 每个入口一份
 

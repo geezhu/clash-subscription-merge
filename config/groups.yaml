@@ -5,6 +5,7 @@
 # scope: shared = 全局只生成一份：名字不加入口前缀，LEAF 展开为【所有来源】的全部节点（与是否有 ALL 入口无关）。
 #   共享组里引用【每个入口的组】（如 🚀 节点选择）时，会展开成所有入口各自的那个组（main/🚀 节点选择、mix/🚀 节点选择 ...）。
 #   注意不要让入口组与共享组互相引用，避免循环。该字段不会写入输出。
+# scope: default = 只给默认入口（default: true，如 ALL）生成；其他入口没有该组，rules.yaml 里指向它的规则也会在其他入口中被省略。
 groups:
   - name: 🚀 节点选择
     type: select
@@ -35,4 +36,5 @@ groups:
 
   - name: 🤖 AI服务
     type: select
+    scope: default
     proxies: [🚀 节点选择, DIRECT, LEAF]
