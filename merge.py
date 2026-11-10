@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# /// script
+# requires-python = ">=3.9"
+# dependencies = ["ruamel.yaml", "requests"]
+# ///
 # -*- coding: utf-8 -*-
 """
 Build one mihomo/Clash config that exposes several local ports, each bound to its own
@@ -1085,9 +1089,23 @@ def validate(cfg: dict, standalone: Optional[Set[str]] = None) -> Tuple[List[str
 # -----------------------------
 # Entrypoint
 # -----------------------------
+def default_config_dir() -> Path:
+    """
+    Where the templates live, first match wins:
+      1. ./config            (your own copy in the current directory: easiest to edit)
+      2. <script dir>/config (running from a clone of the repository)
+      3. <install dir>/merge_config (installed with uvx / pip: the templates shipped inside the package)
+    """
+    for cand in (Path.cwd() / "config", HERE / "config", HERE / "merge_config"):
+        if (cand / "groups.yaml").exists():
+            return cand
+    return HERE / "config"
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description="多订阅多端口 -> mihomo config")
-    ap.add_argument("--config-dir", default=str(HERE / "config"), help="模板目录（base/rulesets/groups/rules）")
+    ap.add_argument("--config-dir", default=str(default_config_dir()),
+                    help="模板目录（base/rulesets/groups/rules）；默认优先用当前目录的 config/")
     ap.add_argument("--base", help="可选：覆盖 config/base.yaml")
     ap.add_argument("--sources", default="sources.yaml", help="订阅/入口配置文件（不存在则交互生成）")
     ap.add_argument("--out", default="merged.yaml", help="输出文件路径")
@@ -1162,7 +1180,8 @@ def main() -> None:
     print(f"\n[完成] 已生成：{out_path}")
 
 
-if __name__ == "__main__":
+def cli() -> None:
+    """Console-script entry point (`clash-merge`, also used by `python merge.py`)."""
     try:
         main()
     except KeyboardInterrupt:
@@ -1173,3 +1192,7 @@ if __name__ == "__main__":
     except Exception as e:  # noqa: BLE001
         print(f"\n[错误] {e}")
         sys.exit(2)
+
+
+if __name__ == "__main__":
+    cli()

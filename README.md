@@ -16,9 +16,23 @@
 
 ## 快速开始
 
+**推荐：用 [uv](https://docs.astral.sh/uv/) 一条命令运行**（不用手动 `pip install`，也不用克隆仓库）。
+
+先装一次 uv（Windows：`powershell -c "irm https://astral.sh/uv/install.ps1 | iex"`，macOS/Linux：`curl -LsSf https://astral.sh/uv/install.sh | sh`，或 `pip install uv`），然后在**任意空目录**运行：
+
 ```bash
-pip install ruamel.yaml requests
-python merge.py
+uvx --from git+https://github.com/geezhu/clash-subscription-merge clash-merge
+```
+
+- 你的数据（`sources.yaml`、`nodes.txt`、`merged.yaml`）都生成在**当前目录**。
+- 想改规则/分组：把仓库里的 `config/` 复制到当前目录再修改，脚本会优先使用当前目录的 `config/`。
+- 想更新到最新版：命令里加 `--refresh`，即 `uvx --refresh --from git+... clash-merge`。
+
+其他运行方式：
+
+```bash
+uv run merge.py                                  # 已克隆仓库：uv 自动装依赖
+pip install ruamel.yaml requests && python merge.py   # 不用 uv
 ```
 
 1. 第一次运行没有 `sources.yaml`，脚本会交互询问：来源（名字、订阅链接或 `local`）、端口、模式，并自动保存为 `sources.yaml`。
